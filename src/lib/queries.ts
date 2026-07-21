@@ -86,6 +86,7 @@ export async function fetchTenants() {
       id,
       name,
       phone,
+      tin_number,
       room_id,
       monthly_rent,
       due_day,
@@ -101,6 +102,7 @@ export async function fetchTenants() {
     id: row.id,
     name: row.name,
     phone: row.phone ?? undefined,
+    tinNumber: row.tin_number ?? undefined,
     roomId: row.room_id,
     monthlyRent: row.monthly_rent,
     dueDay: row.due_day,
@@ -156,6 +158,7 @@ export async function addTenant(
       id: tenant.id,
       name: tenant.name,
       phone: tenant.phone ?? null,
+      tin_number: tenant.tinNumber ?? null,
       room_id: tenant.room_id ?? tenant.roomId,
       monthly_rent: tenant.monthlyRent,
       due_day: tenant.dueDay,
@@ -166,6 +169,43 @@ export async function addTenant(
 
   if (error) throw error;
   return data;
+}
+
+export async function updateTenant(
+  id: string,
+  updates: Partial<Tenant> & { tinNumber?: string },
+) {
+  const { data, error } = await supabase
+    .from("tenants")
+    .update({
+      name: updates.name,
+      phone: updates.phone ?? null,
+      tin_number: updates.tinNumber ?? null,
+      room_id: updates.roomId,
+      monthly_rent: updates.monthlyRent,
+      due_day: updates.dueDay,
+    })
+    .eq("id", id)
+    .select()
+    .single();
+
+  if (error) throw error;
+  return {
+    id: data.id,
+    name: data.name,
+    phone: data.phone ?? undefined,
+    tinNumber: data.tin_number ?? undefined,
+    roomId: data.room_id,
+    monthlyRent: data.monthly_rent,
+    dueDay: data.due_day,
+    startDate: data.start_date,
+  } as Tenant;
+}
+
+export async function deleteTenant(id: string) {
+  const { error } = await supabase.from("tenants").delete().eq("id", id);
+  if (error) throw error;
+  return true;
 }
 
 export async function addPayment(

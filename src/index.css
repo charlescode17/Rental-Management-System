@@ -116,12 +116,7 @@ aside,
 .app-main-inner,
 .auth-shell {
   transition-property:
-    background-color,
-    background,
-    color,
-    border-color,
-    fill,
-    stroke;
+    background-color, background, color, border-color, fill, stroke;
   transition-duration: 0.3s;
   transition-timing-function: ease;
   transition-delay: 0s;
@@ -227,6 +222,69 @@ input[type="search"]::-webkit-search-cancel-button {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
   gap: 12px;
+}
+
+/* Room card improvements for responsive layout and consistent spacing */
+.room-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 12px 14px;
+  min-height: 110px;
+  border-radius: var(--radius);
+  background-color: var(--surface);
+  border: 1.5px solid var(--border);
+  transition:
+    box-shadow 0.12s,
+    transform 0.12s;
+}
+.room-card:focus,
+.room-card:hover {
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
+}
+.room-card .room-number {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.room-card .room-tenant {
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.room-card .room-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 6px;
+}
+.room-card .room-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.room-card button {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  padding: 6px;
+  border-radius: 6px;
+}
+
+@media (max-width: 375px) {
+  .room-card {
+    padding: 12px;
+    min-height: 92px;
+  }
+  .room-card .room-number {
+    font-size: 15px;
+  }
 }
 
 .mobile-full-width {

@@ -16,11 +16,15 @@ import {
   Trash2,
   Check,
   Settings,
+  List,
+  LayoutGrid,
 } from "lucide-react";
 import WelcomePage from "./WelcomePage";
 import UserMenu from "./UserMenu";
 import { FLOORS, FLOOR_LABELS } from "./data";
 import type { Room, Tenant, Payment, Floor, PaymentTag } from "./data";
+
+type TenantWithTin = Tenant & { tinNumber?: string };
 import {
   fetchBuildings,
   addBuilding,
@@ -34,7 +38,13 @@ import {
   addRoom,
   updateRoom,
   deleteRoom,
+  updateTenant,
+  deleteTenant,
 } from "./lib/queries";
+import {
+  exportPaymentsToExcel,
+  exportPaymentsToPDF,
+} from "./lib/exportReports";
 
 // ─── Utilities ───────────────────────────────────────────────────────────────
 
@@ -113,6 +123,142 @@ function collectThisMonth(payments: Payment[]) {
 
 function uniqueId() {
   return Math.random().toString(36).slice(2);
+}
+
+function getTenantForRoom(roomId: string, tenants: Tenant[]) {
+  return tenants.find((tenant) => tenant.roomId === roomId) ?? null;
+}
+
+function floorLabel(floor: string): string {
+  return (FLOOR_LABELS as Record<string, string>)[floor] ?? floor;
+}
+
+// ─── Per-building custom floors (persisted via localStorage) ────────────────
+// Your current data model has one global FLOORS list. Buildings don't all
+// have the same floors, so each building can now define its own floor list,
+// managed from Settings > Configure Floors, stored per building id.
+function getBuildingFloors(buildingId: string): string[] {
+  if (!buildingId || typeof window === "undefined") return [...FLOORS];
+  try {
+    const raw = localStorage.getItem(`rm:floors:${buildingId}`);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    }
+  } catch {
+    // fall through to default
+  }
+  return [...FLOORS];
+}
+
+function setBuildingFloorsStorage(buildingId: string, floors: string[]) {
+  if (typeof window === "undefined" || !buildingId) return;
+  localStorage.setItem(`rm:floors:${buildingId}`, JSON.stringify(floors));
+}
+
+// ─── Global responsive / visual polish styles ────────────────────────────────
+const GLOBAL_CSS = `
+* { box-sizing: border-box; }
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.main-content > div { animation: fadeInUp 0.28s ease; }
+
+.section-title { font-size: clamp(19px, 4.2vw, 22px); }
+
+.main-content { padding: 24px; }
+@media (max-width: 768px) {
+  .main-content { padding: 72px 14px 28px; }
+}
+
+/* Dashboard stat cards */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+@media (max-width: 900px) { .stats-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 540px) { .stats-grid { grid-template-columns: 1fr; } }
+
+.stat-card { transition: transform 0.15s ease, box-shadow 0.15s ease; }
+.stat-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md, 0 10px 30px rgba(0,0,0,0.10)); }
+@media (max-width: 540px) { .stat-card { padding: 18px !important; } }
+
+/* Two-column pages (Tenants, Payments) stack on tablet/mobile */
+@media (max-width: 900px) {
+  .page-grid-two { grid-template-columns: 1fr !important; }
+}
+
+/* Reports filter bar stacks on mobile */
+@media (max-width: 640px) {
+  .report-filters { flex-direction: column !important; align-items: stretch !important; }
+  .report-filters > * { width: 100% !important; }
+}
+
+/* Reports summary cards stack on small phones */
+@media (max-width: 480px) {
+  .summary-grid { grid-template-columns: 1fr !important; }
+}
+
+/* Room card grid tightens on small phones */
+@media (max-width: 420px) {
+  .room-card-grid { grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)) !important; gap: 8px !important; }
+}
+.room-card { transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease; }
+.room-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md, 0 8px 22px rgba(0,0,0,0.08)); }
+
+.tenant-card { transition: transform 0.15s ease, box-shadow 0.15s ease; }
+.tenant-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md, 0 8px 22px rgba(0,0,0,0.08)); }
+@media (max-width: 420px) {
+  .tenant-card-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)) !important; gap: 8px !important; }
+}
+
+/* Generic hoverable data rows */
+.table-row { transition: background-color 0.12s ease; }
+.table-row:hover { background-color: var(--nav-hover-bg); }
+
+/* Tenants list: fully responsive columns, no forced horizontal scroll */
+.tbl-tenants {
+  display: grid;
+  grid-template-columns: 1fr 90px 90px 100px 56px;
+  gap: 12px;
+  align-items: center;
+}
+@media (max-width: 640px) {
+  .tbl-tenants { grid-template-columns: 1fr 100px 56px; }
+  .tenant-col-floor, .tenant-col-room { display: none; }
+}
+
+/* Payments recent list: fully responsive columns, no forced horizontal scroll */
+.tbl-payments {
+  display: grid;
+  grid-template-columns: 1fr 70px 90px 100px;
+  gap: 12px;
+  align-items: center;
+}
+@media (max-width: 640px) {
+  .tbl-payments { grid-template-columns: 1fr 100px; }
+  .payment-col-months, .payment-col-tag { display: none; }
+}
+
+.tenants-toolbar { flex-wrap: wrap; }
+
+/* Accessible focus rings */
+button:focus-visible, input:focus-visible, select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+`;
+
+function GlobalStyles() {
+  return <style>{GLOBAL_CSS}</style>;
 }
 
 // ─── SVG Icons ───────────────────────────────────────────────────────────────
@@ -343,7 +489,11 @@ const Icon = {
 
 // ─── Shared UI Components ────────────────────────────────────────────────────
 
-function StatusBadge({ status }: { status: "paid" | "due-soon" | "overdue" }) {
+function StatusBadge({
+  status,
+}: {
+  status: "paid" | "due-soon" | "overdue" | "occupied" | "vacant";
+}) {
   const cfg = {
     paid: {
       bg: "var(--status-paid-bg)",
@@ -362,6 +512,18 @@ function StatusBadge({ status }: { status: "paid" | "due-soon" | "overdue" }) {
       color: "var(--status-overdue)",
       label: "Overdue",
       icon: Icon.alert,
+    },
+    occupied: {
+      bg: "var(--status-paid-bg)",
+      color: "var(--status-paid)",
+      label: "Occupied",
+      icon: Icon.check,
+    },
+    vacant: {
+      bg: "var(--surface2)",
+      color: "var(--text-muted)",
+      label: "Vacant",
+      icon: Icon.check,
     },
   }[status];
   return (
@@ -413,12 +575,18 @@ function PaymentTagBadge({ daysOffset }: { daysOffset: number }) {
 function Card({
   children,
   style,
+  className,
+  onClick,
 }: {
   children: React.ReactNode;
   style?: React.CSSProperties;
+  className?: string;
+  onClick?: (e: React.MouseEvent<HTMLDivElement>) => void;
 }) {
   return (
     <div
+      className={className}
+      onClick={onClick}
       style={{
         backgroundColor: "var(--surface)",
         border: "1px solid var(--border)",
@@ -593,12 +761,8 @@ function SectionHeader({
   return (
     <div style={{ marginBottom: 24 }}>
       <h1
-        style={{
-          margin: 0,
-          fontSize: 22,
-          fontWeight: 700,
-          color: "var(--text)",
-        }}
+        className="section-title"
+        style={{ margin: 0, fontWeight: 700, color: "var(--text)" }}
       >
         {title}
       </h1>
@@ -640,7 +804,12 @@ function DashboardPage({
   tenants: Tenant[];
   payments: Payment[];
 }) {
-  const occupied = rooms.filter((r) => r.occupied).length;
+  // FIX: occupancy is now derived from actual tenant→room assignments
+  // instead of the (previously stale) room.occupied flag, so this always
+  // reflects the real, current state of your buildings.
+  const occupied = rooms.filter(
+    (r) => !!getTenantForRoom(r.id, tenants),
+  ).length;
   const total = rooms.length;
   const collected = collectThisMonth(payments);
   const reminders = buildReminders(tenants, rooms, payments);
@@ -653,16 +822,8 @@ function DashboardPage({
         subtitle="July 2026 · Kigali rental overview"
       />
 
-      {/* Stat cards */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(3, 1fr)",
-          gap: 16,
-          marginBottom: 32,
-        }}
-      >
-        <Card style={{ padding: 24 }}>
+      <div className="stats-grid" style={{ marginBottom: 32 }}>
+        <Card className="stat-card" style={{ padding: 24 }}>
           <div
             style={{
               fontSize: 12,
@@ -706,7 +867,7 @@ function DashboardPage({
             <div
               style={{
                 height: "100%",
-                width: `${(occupied / total) * 100}%`,
+                width: `${total > 0 ? (occupied / total) * 100 : 0}%`,
                 backgroundColor: "var(--accent)",
                 borderRadius: 99,
                 transition: "width 0.3s",
@@ -720,7 +881,7 @@ function DashboardPage({
           </div>
         </Card>
 
-        <Card style={{ padding: 24 }}>
+        <Card className="stat-card" style={{ padding: 24 }}>
           <div
             style={{
               fontSize: 12,
@@ -752,7 +913,7 @@ function DashboardPage({
           </div>
         </Card>
 
-        <Card style={{ padding: 24 }}>
+        <Card className="stat-card" style={{ padding: 24 }}>
           <div
             style={{
               fontSize: 12,
@@ -793,7 +954,6 @@ function DashboardPage({
         </Card>
       </div>
 
-      {/* Reminders */}
       <Card>
         <div
           style={{
@@ -823,7 +983,6 @@ function DashboardPage({
           </div>
         ) : (
           <div style={{ overflowX: "auto" }}>
-            {/* Header row */}
             <div
               style={{
                 display: "grid",
@@ -853,6 +1012,7 @@ function DashboardPage({
             {reminders.map((row, i) => (
               <div
                 key={row.tenant.id}
+                className="table-row"
                 style={{
                   display: "grid",
                   gridTemplateColumns: "1fr 140px 130px 110px",
@@ -928,21 +1088,55 @@ function TenantsPage({
   rooms,
   tenants,
   onAddTenant,
+  onUpdateTenant,
+  onDeleteTenant,
 }: {
   rooms: Room[];
-  tenants: Tenant[];
-  onAddTenant: (t: Tenant, r: Room) => void;
+  tenants: TenantWithTin[];
+  onAddTenant: (t: TenantWithTin, r: Room) => void;
+  onUpdateTenant: (t: TenantWithTin) => void;
+  onDeleteTenant: (tenantId: string) => void;
 }) {
+  const [buildings, setBuildings] = useState<{ id: string; name: string }[]>(
+    [],
+  );
   const [form, setForm] = useState({
     roomId: "",
     name: "",
     phone: "",
+    tinNumber: "",
     rent: "",
     dueDay: "5",
   });
   const [submitted, setSubmitted] = useState(false);
+  const [viewMode, setViewMode] = useState<"list" | "grid">("list");
+  const [query, setQuery] = useState("");
 
-  const vacantRooms = rooms.filter((r) => !r.occupied);
+  const [editingTenantId, setEditingTenantId] = useState<string | null>(null);
+  const [editingTenant, setEditingTenant] = useState({
+    roomId: "",
+    name: "",
+    phone: "",
+    tinNumber: "",
+    rent: "",
+    dueDay: "5",
+  });
+
+  useEffect(() => {
+    let mounted = true;
+    fetchBuildings()
+      .then((rows) => {
+        if (mounted) setBuildings(rows);
+      })
+      .catch((err) => console.error("Failed to load buildings", err));
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const vacantRooms = rooms.filter(
+    (room) => !getTenantForRoom(room.id, tenants),
+  );
 
   const selectedRoom = rooms.find((r) => r.id === form.roomId);
 
@@ -956,20 +1150,72 @@ function TenantsPage({
     e.preventDefault();
     if (!form.roomId || !form.name.trim() || !form.rent || !form.dueDay) return;
     const room = rooms.find((r) => r.id === form.roomId)!;
-    const newTenant: Tenant = {
+    const newTenant: TenantWithTin = {
       id: "t" + uniqueId(),
       name: form.name.trim(),
       phone: form.phone.trim() || undefined,
+      tinNumber: form.tinNumber.trim() || undefined,
       roomId: form.roomId,
       monthlyRent: parseInt(form.rent),
       dueDay: parseInt(form.dueDay),
       startDate: "2026-07-19",
     };
     onAddTenant(newTenant, room);
-    setForm({ roomId: "", name: "", phone: "", rent: "", dueDay: "5" });
+    setForm({
+      roomId: "",
+      name: "",
+      phone: "",
+      tinNumber: "",
+      rent: "",
+      dueDay: "5",
+    });
     setSubmitted(true);
     setTimeout(() => setSubmitted(false), 3000);
   }
+
+  function startEdit(t: TenantWithTin) {
+    setEditingTenantId(t.id);
+    setEditingTenant({
+      roomId: t.roomId,
+      name: t.name,
+      phone: t.phone || "",
+      tinNumber: t.tinNumber || "",
+      rent: String(t.monthlyRent),
+      dueDay: String(t.dueDay),
+    });
+  }
+
+  function submitEdit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editingTenantId) return;
+    const existing = tenants.find((t) => t.id === editingTenantId);
+    if (!existing) return;
+    onUpdateTenant({
+      ...existing,
+      name: editingTenant.name.trim(),
+      phone: editingTenant.phone.trim() || undefined,
+      tinNumber: editingTenant.tinNumber.trim() || undefined,
+      roomId: editingTenant.roomId,
+      monthlyRent: parseInt(editingTenant.rent) || existing.monthlyRent,
+      dueDay: parseInt(editingTenant.dueDay) || existing.dueDay,
+    });
+    setEditingTenantId(null);
+  }
+
+  function handleDelete(t: TenantWithTin) {
+    if (window.confirm(`Remove ${t.name} and free up their room?`)) {
+      onDeleteTenant(t.id);
+    }
+  }
+
+  const filteredTenants = query.trim()
+    ? tenants.filter((t) => t.name.toLowerCase().includes(query.toLowerCase()))
+    : tenants;
+
+  const editableRooms = rooms.filter(
+    (room) =>
+      !getTenantForRoom(room.id, tenants) || room.id === editingTenant.roomId,
+  );
 
   return (
     <div>
@@ -986,45 +1232,246 @@ function TenantsPage({
         }}
         className="page-grid-two"
       >
-        {/* Tenant list */}
+        {/* Tenant list / grid */}
         <Card>
           <div
+            className="tenants-toolbar"
             style={{
               padding: "16px 20px",
               borderBottom: "1px solid var(--border)",
               display: "flex",
               justifyContent: "space-between",
               alignItems: "center",
+              gap: 12,
             }}
           >
-            <div
-              style={{ fontWeight: 600, fontSize: 14, color: "var(--text)" }}
-            >
-              Active Tenants
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div
+                style={{ fontWeight: 600, fontSize: 14, color: "var(--text)" }}
+              >
+                Active Tenants
+              </div>
+              <div
+                className="mono"
+                style={{ fontSize: 12, color: "var(--text-muted)" }}
+              >
+                {tenants.length} total
+              </div>
             </div>
-            <div
-              className="mono"
-              style={{ fontSize: 12, color: "var(--text-muted)" }}
-            >
-              {tenants.length} total
-            </div>
-          </div>
-          <div style={{ overflowX: "auto" }}>
-            {/* Table header */}
             <div
               style={{
-                display: "grid",
-                gridTemplateColumns: "1fr 90px 90px 110px",
-                gap: 12,
-                padding: "10px 20px",
-                backgroundColor: "var(--surface2)",
-                borderBottom: "1px solid var(--border)",
-                minWidth: "400px",
+                display: "flex",
+                gap: 8,
+                alignItems: "center",
+                flexWrap: "wrap",
               }}
             >
-              {["Name", "Floor", "Room", "Monthly Rent"].map((h) => (
+              <input
+                type="search"
+                placeholder="Search tenants…"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                style={{
+                  padding: "6px 10px",
+                  borderRadius: "var(--radius-sm)",
+                  border: "1px solid var(--input-border)",
+                  backgroundColor: "var(--input-bg)",
+                  color: "var(--text)",
+                  fontSize: 13,
+                  outline: "none",
+                  minWidth: 140,
+                }}
+              />
+              <div
+                style={{
+                  display: "flex",
+                  border: "1px solid var(--border)",
+                  borderRadius: "var(--radius-sm)",
+                  overflow: "hidden",
+                }}
+              >
+                <button
+                  onClick={() => setViewMode("list")}
+                  title="List view"
+                  style={{
+                    padding: "6px 9px",
+                    border: "none",
+                    cursor: "pointer",
+                    backgroundColor:
+                      viewMode === "list"
+                        ? "var(--nav-active-bg)"
+                        : "var(--surface)",
+                    color:
+                      viewMode === "list"
+                        ? "var(--nav-active-text)"
+                        : "var(--text-muted)",
+                    display: "flex",
+                  }}
+                >
+                  <List size={15} />
+                </button>
+                <button
+                  onClick={() => setViewMode("grid")}
+                  title="Grid view"
+                  style={{
+                    padding: "6px 9px",
+                    border: "none",
+                    cursor: "pointer",
+                    backgroundColor:
+                      viewMode === "grid"
+                        ? "var(--nav-active-bg)"
+                        : "var(--surface)",
+                    color:
+                      viewMode === "grid"
+                        ? "var(--nav-active-text)"
+                        : "var(--text-muted)",
+                    display: "flex",
+                  }}
+                >
+                  <LayoutGrid size={15} />
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {filteredTenants.length === 0 ? (
+            <div
+              style={{
+                padding: "40px 20px",
+                textAlign: "center",
+                color: "var(--text-muted)",
+                fontSize: 13,
+              }}
+            >
+              No tenants match your search.
+            </div>
+          ) : viewMode === "grid" ? (
+            <div
+              className="tenant-card-grid"
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
+                gap: 12,
+                padding: 16,
+              }}
+            >
+              {filteredTenants.map((t) => {
+                const room = rooms.find((r) => r.id === t.roomId);
+                const building = room
+                  ? buildings.find((b) => b.id === room.buildingId)
+                  : null;
+                return (
+                  <div
+                    key={t.id}
+                    className="tenant-card"
+                    style={{
+                      backgroundColor: "var(--surface)",
+                      border: "1px solid var(--border)",
+                      borderRadius: "var(--radius)",
+                      padding: 14,
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "flex-start",
+                        marginBottom: 8,
+                      }}
+                    >
+                      <div
+                        style={{
+                          fontWeight: 600,
+                          fontSize: 14,
+                          color: "var(--text)",
+                        }}
+                      >
+                        {t.name}
+                      </div>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <button
+                          onClick={() => startEdit(t)}
+                          title="Edit tenant"
+                          style={{
+                            background: "transparent",
+                            border: "none",
+                            cursor: "pointer",
+                            color: "var(--text-muted)",
+                          }}
+                        >
+                          <Edit2 size={13} />
+                        </button>
+                        <button
+                          onClick={() => handleDelete(t)}
+                          title="Remove tenant"
+                          style={{
+                            background: "transparent",
+                            border: "none",
+                            cursor: "pointer",
+                            color: "var(--text-muted)",
+                          }}
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    </div>
+                    {t.phone && (
+                      <div
+                        style={{
+                          fontSize: 11,
+                          color: "var(--text-muted)",
+                          marginBottom: 4,
+                        }}
+                      >
+                        {t.phone}
+                      </div>
+                    )}
+                    <div
+                      style={{
+                        fontSize: 12,
+                        color: "var(--text-muted)",
+                        marginBottom: 4,
+                      }}
+                    >
+                      {building ? `${building.name} · ` : ""}
+                      {room
+                        ? `${floorLabel(room.floor)} · ${room.number}`
+                        : "—"}
+                    </div>
+                    <div
+                      className="mono"
+                      style={{
+                        fontSize: 14,
+                        fontWeight: 600,
+                        color: "var(--text)",
+                      }}
+                    >
+                      {fmtRWF(t.monthlyRent)}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: "var(--text-muted)",
+                        marginTop: 2,
+                      }}
+                    >
+                      Due day {t.dueDay}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div style={{ overflowX: "auto" }}>
+              <div
+                className="tbl-tenants"
+                style={{
+                  padding: "10px 20px",
+                  backgroundColor: "var(--surface2)",
+                  borderBottom: "1px solid var(--border)",
+                }}
+              >
                 <div
-                  key={h}
                   style={{
                     fontSize: 11,
                     fontWeight: 600,
@@ -1033,39 +1480,69 @@ function TenantsPage({
                     color: "var(--text-muted)",
                   }}
                 >
-                  {h}
+                  Name
                 </div>
-              ))}
-            </div>
-            {tenants.map((t, i) => {
-              const room = rooms.find((r) => r.id === t.roomId);
-              return (
                 <div
-                  key={t.id}
+                  className="tenant-col-floor"
                   style={{
-                    display: "grid",
-                    gridTemplateColumns: "1fr 90px 90px 110px",
-                    gap: 12,
-                    padding: "13px 20px",
-                    alignItems: "center",
-                    borderBottom:
-                      i < tenants.length - 1
-                        ? "1px solid var(--border)"
-                        : "none",
-                    minWidth: "400px",
+                    fontSize: 11,
+                    fontWeight: 600,
+                    letterSpacing: "0.06em",
+                    textTransform: "uppercase",
+                    color: "var(--text-muted)",
                   }}
                 >
-                  <div>
-                    <div
-                      style={{
-                        fontWeight: 500,
-                        color: "var(--text)",
-                        fontSize: 13,
-                      }}
-                    >
-                      {t.name}
-                    </div>
-                    {t.phone && (
+                  Floor
+                </div>
+                <div
+                  className="tenant-col-room"
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 600,
+                    letterSpacing: "0.06em",
+                    textTransform: "uppercase",
+                    color: "var(--text-muted)",
+                  }}
+                >
+                  Room
+                </div>
+                <div
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 600,
+                    letterSpacing: "0.06em",
+                    textTransform: "uppercase",
+                    color: "var(--text-muted)",
+                  }}
+                >
+                  Rent
+                </div>
+                <div />
+              </div>
+              {filteredTenants.map((t, i) => {
+                const room = rooms.find((r) => r.id === t.roomId);
+                return (
+                  <div
+                    key={t.id}
+                    className="table-row tbl-tenants"
+                    style={{
+                      padding: "13px 20px",
+                      borderBottom:
+                        i < filteredTenants.length - 1
+                          ? "1px solid var(--border)"
+                          : "none",
+                    }}
+                  >
+                    <div>
+                      <div
+                        style={{
+                          fontWeight: 500,
+                          color: "var(--text)",
+                          fontSize: 13,
+                        }}
+                      >
+                        {t.name}
+                      </div>
                       <div
                         style={{
                           fontSize: 11,
@@ -1073,30 +1550,67 @@ function TenantsPage({
                           marginTop: 1,
                         }}
                       >
-                        {t.phone}
+                        {t.phone ? `${t.phone} · ` : ""}
+                        {room
+                          ? `${floorLabel(room.floor)} · ${room.number}`
+                          : "—"}
                       </div>
-                    )}
-                  </div>
-                  <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
-                    {room?.floor ?? "—"}
-                  </div>
-                  <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
-                    {room?.number ?? "—"}
-                  </div>
-                  <div
-                    style={{ display: "flex", alignItems: "center", gap: 6 }}
-                  >
-                    <span
+                    </div>
+                    <div
+                      className="tenant-col-floor"
+                      style={{ fontSize: 13, color: "var(--text-muted)" }}
+                    >
+                      {room ? floorLabel(room.floor) : "—"}
+                    </div>
+                    <div
+                      className="tenant-col-room"
+                      style={{ fontSize: 13, color: "var(--text-muted)" }}
+                    >
+                      {room?.number ?? "—"}
+                    </div>
+                    <div
                       className="mono"
                       style={{ fontSize: 13, color: "var(--text)" }}
                     >
                       {fmtRWF(t.monthlyRent)}
-                    </span>
+                    </div>
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: 6,
+                        justifyContent: "flex-end",
+                      }}
+                    >
+                      <button
+                        onClick={() => startEdit(t)}
+                        title="Edit"
+                        style={{
+                          background: "transparent",
+                          border: "none",
+                          cursor: "pointer",
+                          color: "var(--text-muted)",
+                        }}
+                      >
+                        <Edit2 size={13} />
+                      </button>
+                      <button
+                        onClick={() => handleDelete(t)}
+                        title="Delete"
+                        style={{
+                          background: "transparent",
+                          border: "none",
+                          cursor: "pointer",
+                          color: "var(--text-muted)",
+                        }}
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          )}
         </Card>
 
         {/* Register form */}
@@ -1136,7 +1650,7 @@ function TenantsPage({
               <option value="">Select a room…</option>
               {vacantRooms.map((r) => (
                 <option key={r.id} value={r.id}>
-                  {r.floor} · {r.number} — {fmtRWF(r.baseRent)}/mo
+                  {floorLabel(r.floor)} · {r.number} — {fmtRWF(r.baseRent)}/mo
                 </option>
               ))}
             </Select>
@@ -1148,7 +1662,6 @@ function TenantsPage({
               onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
               required
             />
-
             <Input
               label="Phone (optional)"
               placeholder="+250 7XX XXX XXX"
@@ -1157,7 +1670,14 @@ function TenantsPage({
                 setForm((f) => ({ ...f, phone: e.target.value }))
               }
             />
-
+            <Input
+              label="TIN Number (optional)"
+              placeholder="e.g. 123456789"
+              value={form.tinNumber}
+              onChange={(e) =>
+                setForm((f) => ({ ...f, tinNumber: e.target.value }))
+              }
+            />
             <Input
               label="Monthly Rent (RWF)"
               type="number"
@@ -1166,7 +1686,6 @@ function TenantsPage({
               onChange={(e) => setForm((f) => ({ ...f, rent: e.target.value }))}
               required
             />
-
             <Input
               label="Due Day of Month (1–31)"
               type="number"
@@ -1204,6 +1723,118 @@ function TenantsPage({
           </form>
         </Card>
       </div>
+
+      {/* Edit tenant modal */}
+      {editingTenantId && (
+        <div
+          onClick={() => setEditingTenantId(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            backgroundColor: "rgba(15,23,42,0.35)",
+            zIndex: 130,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 20,
+          }}
+        >
+          <Card
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "min(420px, 100%)",
+              padding: 20,
+              maxHeight: "calc(100vh - 40px)",
+              overflowY: "auto",
+            }}
+          >
+            <div
+              style={{
+                fontWeight: 700,
+                fontSize: 16,
+                marginBottom: 16,
+                color: "var(--text)",
+              }}
+            >
+              Edit Tenant
+            </div>
+            <form
+              onSubmit={submitEdit}
+              style={{ display: "flex", flexDirection: "column", gap: 14 }}
+            >
+              <Select
+                label="Room"
+                value={editingTenant.roomId}
+                onChange={(e) =>
+                  setEditingTenant((t) => ({ ...t, roomId: e.target.value }))
+                }
+                required
+              >
+                {editableRooms.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {floorLabel(r.floor)} · {r.number} — {fmtRWF(r.baseRent)}/mo
+                  </option>
+                ))}
+              </Select>
+              <Input
+                label="Full Name"
+                value={editingTenant.name}
+                onChange={(e) =>
+                  setEditingTenant((t) => ({ ...t, name: e.target.value }))
+                }
+                required
+              />
+              <Input
+                label="Phone (optional)"
+                value={editingTenant.phone}
+                onChange={(e) =>
+                  setEditingTenant((t) => ({ ...t, phone: e.target.value }))
+                }
+              />
+              <Input
+                label="TIN Number (optional)"
+                value={editingTenant.tinNumber}
+                onChange={(e) =>
+                  setEditingTenant((t) => ({ ...t, tinNumber: e.target.value }))
+                }
+              />
+              <Input
+                label="Monthly Rent (RWF)"
+                type="number"
+                value={editingTenant.rent}
+                onChange={(e) =>
+                  setEditingTenant((t) => ({ ...t, rent: e.target.value }))
+                }
+                required
+              />
+              <Input
+                label="Due Day (1–31)"
+                type="number"
+                min={1}
+                max={31}
+                value={editingTenant.dueDay}
+                onChange={(e) =>
+                  setEditingTenant((t) => ({ ...t, dueDay: e.target.value }))
+                }
+                required
+              />
+              <div style={{ display: "flex", gap: 8 }}>
+                <Button type="submit" style={{ flex: 1 }}>
+                  Save Changes
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => setEditingTenantId(null)}
+                  style={{ flex: 1 }}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </form>
+          </Card>
+        </div>
+      )}
     </div>
   );
 }
@@ -1314,7 +1945,6 @@ function PaymentsPage({
             onSubmit={handleSubmit}
             style={{ display: "flex", flexDirection: "column", gap: 16 }}
           >
-            {/* Live search */}
             <div>
               <Label>Tenant Name</Label>
               <div style={{ position: "relative" }}>
@@ -1404,8 +2034,8 @@ function PaymentsPage({
                                 marginTop: 2,
                               }}
                             >
-                              {r.floor} · {r.number} · {fmtRWF(t.monthlyRent)}
-                              /mo
+                              {floorLabel(r.floor)} · {r.number} ·{" "}
+                              {fmtRWF(t.monthlyRent)}/mo
                             </div>
                           )}
                         </button>
@@ -1416,12 +2046,11 @@ function PaymentsPage({
               </div>
             </div>
 
-            {/* Read-only tenant info */}
             {selectedTenant && selectedRoom && (
               <div
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "1fr 1fr",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))",
                   gap: 10,
                 }}
               >
@@ -1429,7 +2058,7 @@ function PaymentsPage({
                   <Label>Floor</Label>
                   <input
                     disabled
-                    value={selectedRoom.floor}
+                    value={floorLabel(selectedRoom.floor)}
                     style={{
                       width: "100%",
                       padding: "8px 12px",
@@ -1512,7 +2141,6 @@ function PaymentsPage({
               />
             </div>
 
-            {/* Total */}
             {selectedTenant && (
               <div
                 style={{
@@ -1581,7 +2209,7 @@ function PaymentsPage({
           </form>
         </Card>
 
-        {/* Recent payments */}
+        {/* Recent payments — fully responsive, no forced horizontal scroll */}
         <Card>
           <div
             style={{
@@ -1604,97 +2232,119 @@ function PaymentsPage({
               {payments.length} total
             </div>
           </div>
-          <div style={{ overflowX: "auto" }}>
+          <div
+            className="tbl-payments"
+            style={{
+              padding: "10px 20px",
+              backgroundColor: "var(--surface2)",
+              borderBottom: "1px solid var(--border)",
+            }}
+          >
             <div
               style={{
-                display: "grid",
-                gridTemplateColumns: "1fr 80px 90px 100px",
-                gap: 12,
-                padding: "10px 20px",
-                backgroundColor: "var(--surface2)",
-                borderBottom: "1px solid var(--border)",
-                minWidth: "420px",
+                fontSize: 11,
+                fontWeight: 600,
+                letterSpacing: "0.06em",
+                textTransform: "uppercase",
+                color: "var(--text-muted)",
               }}
             >
-              {["Tenant", "Months", "Tag", "Amount"].map((h) => (
-                <div
-                  key={h}
-                  style={{
-                    fontSize: 11,
-                    fontWeight: 600,
-                    letterSpacing: "0.06em",
-                    textTransform: "uppercase",
-                    color: "var(--text-muted)",
-                  }}
-                >
-                  {h}
-                </div>
-              ))}
+              Tenant
             </div>
-            {recentPayments.map((p, i) => {
-              const t = tenants.find((t) => t.id === p.tenantId);
-              const r = t ? rooms.find((rm) => rm.id === t.roomId) : null;
-              return (
-                <div
-                  key={p.id}
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "1fr 80px 90px 100px",
-                    gap: 12,
-                    padding: "13px 20px",
-                    alignItems: "center",
-                    borderBottom:
-                      i < recentPayments.length - 1
-                        ? "1px solid var(--border)"
-                        : "none",
-                    minWidth: "420px",
-                  }}
-                >
-                  <div>
-                    <div
-                      style={{
-                        fontWeight: 500,
-                        color: "var(--text)",
-                        fontSize: 13,
-                      }}
-                    >
-                      {t?.name ?? "—"}
-                    </div>
-                    {r && (
-                      <div
-                        style={{
-                          fontSize: 11,
-                          color: "var(--text-muted)",
-                          marginTop: 1,
-                        }}
-                      >
-                        {r.floor} · {r.number}
-                      </div>
-                    )}
-                  </div>
+            <div
+              className="payment-col-months"
+              style={{
+                fontSize: 11,
+                fontWeight: 600,
+                letterSpacing: "0.06em",
+                textTransform: "uppercase",
+                color: "var(--text-muted)",
+              }}
+            >
+              Months
+            </div>
+            <div
+              className="payment-col-tag"
+              style={{
+                fontSize: 11,
+                fontWeight: 600,
+                letterSpacing: "0.06em",
+                textTransform: "uppercase",
+                color: "var(--text-muted)",
+              }}
+            >
+              Tag
+            </div>
+            <div
+              style={{
+                fontSize: 11,
+                fontWeight: 600,
+                letterSpacing: "0.06em",
+                textTransform: "uppercase",
+                color: "var(--text-muted)",
+              }}
+            >
+              Amount
+            </div>
+          </div>
+          {recentPayments.map((p, i) => {
+            const t = tenants.find((t) => t.id === p.tenantId);
+            const r = t ? rooms.find((rm) => rm.id === t.roomId) : null;
+            return (
+              <div
+                key={p.id}
+                className="table-row tbl-payments"
+                style={{
+                  padding: "13px 20px",
+                  borderBottom:
+                    i < recentPayments.length - 1
+                      ? "1px solid var(--border)"
+                      : "none",
+                }}
+              >
+                <div>
                   <div
-                    className="mono"
-                    style={{ fontSize: 13, color: "var(--text-muted)" }}
-                  >
-                    {p.monthsCovered} mo
-                  </div>
-                  <div>
-                    <PaymentTagBadge daysOffset={p.daysOffset} />
-                  </div>
-                  <div
-                    className="mono"
                     style={{
-                      fontSize: 13,
                       fontWeight: 500,
                       color: "var(--text)",
+                      fontSize: 13,
                     }}
                   >
-                    {fmtRWF(p.amount)}
+                    {t?.name ?? "—"}
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: "var(--text-muted)",
+                      marginTop: 1,
+                    }}
+                  >
+                    {r ? `${floorLabel(r.floor)} · ${r.number} · ` : ""}
+                    {p.monthsCovered} mo · {tagLabel(p.daysOffset)}
                   </div>
                 </div>
-              );
-            })}
-          </div>
+                <div
+                  className="payment-col-months mono"
+                  style={{ fontSize: 13, color: "var(--text-muted)" }}
+                >
+                  {p.monthsCovered} mo
+                </div>
+                <div className="payment-col-tag">
+                  <PaymentTagBadge daysOffset={p.daysOffset} />
+                </div>
+                <div
+                  className="mono"
+                  style={{
+                    fontSize: 13,
+                    fontWeight: 500,
+                    color: "var(--text)",
+                  }}
+                >
+                  {fmtRWF(p.amount)}
+                </div>
+              </div>
+            );
+          })}
         </Card>
       </div>
     </div>
@@ -1722,6 +2372,96 @@ function ReportsPage({
   const [tenantId, setTenantId] = useState("");
   const [generated, setGenerated] = useState(false);
   const [results, setResults] = useState<Payment[]>([]);
+  const [exportingExcel, setExportingExcel] = useState(false);
+  const [exportingPDF, setExportingPDF] = useState(false);
+
+  function buildReportRows() {
+    return results.map((p) => {
+      const t = tenants.find((tt) => tt.id === p.tenantId);
+      const r = t ? rooms.find((rr) => rr.id === t.roomId) : null;
+      const tenantName = t?.name ?? "—";
+      const roomLabel = r ? `${floorLabel(r.floor)} · ${r.number}` : "—";
+      const paymentDate = p.recordedDate;
+      const monthsCovered = p.monthsCovered;
+      const amount = p.amount;
+      const status =
+        p.daysOffset < 0 ? "early" : p.daysOffset === 0 ? "on-time" : "late";
+      return {
+        tenantName,
+        room: roomLabel,
+        paymentDate,
+        monthsCovered,
+        amount,
+        status,
+      };
+    });
+  }
+
+  function makeFilename(ext: string) {
+    let name = "rent-report";
+    if (tab === "monthly") {
+      const [y, m] = month.split("-");
+      const monthName = new Date(Number(y), Number(m) - 1).toLocaleString(
+        "en-US",
+        { month: "long" },
+      );
+      name += `-monthly-${monthName}-${y}`;
+    } else if (tab === "annual") {
+      name += `-annual-${year}`;
+    } else if (tab === "custom") {
+      name += `-custom-${dateFrom}-to-${dateTo}`;
+    } else if (tab === "per-tenant") {
+      const t = tenants.find((tt) => tt.id === tenantId);
+      const tn = t ? t.name.replace(/\s+/g, "") : "tenant";
+      name += `-tenant-${tn}`;
+    }
+    return `${name}.${ext}`;
+  }
+
+  async function handleExportExcel() {
+    setExportingExcel(true);
+    try {
+      const rows = buildReportRows();
+      const title =
+        tab === "monthly"
+          ? `Monthly Rent Report — ${new Date(month).toLocaleString("en-US", { month: "long", year: "numeric" })}`
+          : tab === "annual"
+            ? `Annual Rent Report — ${year}`
+            : tab === "custom"
+              ? `Custom Rent Report — ${dateFrom} to ${dateTo}`
+              : `Tenant Rent Report`;
+      const filename = makeFilename("xlsx");
+      await exportPaymentsToExcel(rows, { title, filename });
+    } catch (err) {
+      console.error("Export to Excel failed", err);
+      alert("Failed to generate Excel file.");
+    } finally {
+      setExportingExcel(false);
+    }
+  }
+
+  async function handleExportPDF() {
+    setExportingPDF(true);
+    try {
+      const rows = buildReportRows();
+      const total = rows.reduce((s, r) => s + (r.amount || 0), 0);
+      const title =
+        tab === "monthly"
+          ? `Monthly Rent Report — ${new Date(month).toLocaleString("en-US", { month: "long", year: "numeric" })}`
+          : tab === "annual"
+            ? `Annual Rent Report — ${year}`
+            : tab === "custom"
+              ? `Custom Rent Report — ${dateFrom} to ${dateTo}`
+              : `Tenant Rent Report`;
+      const filename = makeFilename("pdf");
+      await exportPaymentsToPDF(rows, { title, filename, total });
+    } catch (err) {
+      console.error("Export to PDF failed", err);
+      alert("Failed to generate PDF file.");
+    } finally {
+      setExportingPDF(false);
+    }
+  }
 
   function generate() {
     let filtered = [...payments];
@@ -1756,7 +2496,6 @@ function ReportsPage({
         subtitle="Generate payment summaries by period or tenant"
       />
 
-      {/* Tab selector */}
       <div
         style={{
           display: "flex",
@@ -1767,6 +2506,8 @@ function ReportsPage({
           padding: 4,
           alignSelf: "flex-start",
           width: "fit-content",
+          overflowX: "auto",
+          maxWidth: "100%",
         }}
       >
         {tabs.map((t) => (
@@ -1783,6 +2524,7 @@ function ReportsPage({
               fontWeight: 500,
               cursor: "pointer",
               border: "none",
+              whiteSpace: "nowrap",
               backgroundColor: tab === t.id ? "var(--surface)" : "transparent",
               color: tab === t.id ? "var(--text)" : "var(--text-muted)",
               boxShadow: tab === t.id ? "var(--shadow)" : "none",
@@ -1794,7 +2536,6 @@ function ReportsPage({
         ))}
       </div>
 
-      {/* Filter controls */}
       <Card style={{ padding: 20, marginBottom: 20 }}>
         <div
           style={{
@@ -1901,7 +2642,6 @@ function ReportsPage({
 
       {generated && (
         <>
-          {/* Summary bar */}
           <div
             style={{
               display: "grid",
@@ -1970,7 +2710,6 @@ function ReportsPage({
             </Card>
           </div>
 
-          {/* Results list */}
           <Card>
             <div style={{ overflowX: "auto" }}>
               <div
@@ -2017,6 +2756,7 @@ function ReportsPage({
                   return (
                     <div
                       key={p.id}
+                      className="table-row"
                       style={{
                         display: "grid",
                         gridTemplateColumns: "1fr 120px 80px 90px 110px",
@@ -2040,7 +2780,7 @@ function ReportsPage({
                         {t?.name ?? "—"}
                       </div>
                       <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
-                        {r ? `${r.floor} · ${r.number}` : "—"}
+                        {r ? `${floorLabel(r.floor)} · ${r.number}` : "—"}
                       </div>
                       <div
                         className="mono"
@@ -2066,6 +2806,31 @@ function ReportsPage({
                 })
               )}
             </div>
+
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: 8,
+                marginBottom: 12,
+                flexWrap: "wrap",
+                padding: "0 4px",
+              }}
+            >
+              <Button
+                onClick={handleExportExcel}
+                disabled={exportingExcel || results.length === 0}
+              >
+                {exportingExcel ? "Generating..." : "Export to Excel"}
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={handleExportPDF}
+                disabled={exportingPDF || results.length === 0}
+              >
+                {exportingPDF ? "Generating..." : "Export to PDF"}
+              </Button>
+            </div>
           </Card>
         </>
       )}
@@ -2083,11 +2848,15 @@ function BuildingsPage({
   onDeleteRoom,
 }: {
   rooms: Room[];
-  tenants: Tenant[];
+  tenants: TenantWithTin[];
   onAddRoom: (room: Partial<Room>) => void;
   onUpdateRoom: (room: Room) => void;
   onDeleteRoom: (roomId: string) => void;
 }) {
+  const [buildings, setBuildings] = useState<{ id: string; name: string }[]>(
+    [],
+  );
+  const [buildingId, setBuildingId] = useState("");
   const [form, setForm] = useState(() => ({
     floor:
       (typeof window !== "undefined" &&
@@ -2096,11 +2865,8 @@ function BuildingsPage({
     number: "",
     baseRent: "",
   }));
-  const [buildings, setBuildings] = useState<{ id: string; name: string }[]>(
-    [],
-  );
-  const [buildingId, setBuildingId] = useState("");
   const [submitted, setSubmitted] = useState(false);
+  const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [editingRoomId, setEditingRoomId] = useState<string | null>(null);
   const [editingRoom, setEditingRoom] = useState<{
     floor: Floor;
@@ -2108,11 +2874,18 @@ function BuildingsPage({
     baseRent: string;
     buildingId: string;
   }>({
-    floor: "Ground",
+    floor: "Ground" as Floor,
     number: "",
     baseRent: "",
     buildingId: "",
   });
+
+  const selectedRoom = selectedRoomId
+    ? (rooms.find((room) => room.id === selectedRoomId) ?? null)
+    : null;
+  const selectedTenant = selectedRoom
+    ? getTenantForRoom(selectedRoom.id, tenants)
+    : null;
 
   useEffect(() => {
     let isMounted = true;
@@ -2123,7 +2896,6 @@ function BuildingsPage({
         if (!isMounted) return;
         setBuildings(rows);
 
-        // Prefer saved active building from settings if it exists
         const stored =
           typeof window !== "undefined"
             ? localStorage.getItem("rm:activeBuilding")
@@ -2144,6 +2916,15 @@ function BuildingsPage({
     };
   }, []);
 
+  // Whenever the selected building changes, default the Floor field to
+  // that building's own first configured floor.
+  useEffect(() => {
+    if (buildingId) {
+      const floors = getBuildingFloors(buildingId);
+      setForm((f) => ({ ...f, floor: (floors[0] || "Ground") as Floor }));
+    }
+  }, [buildingId]);
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!form.number.trim() || !form.baseRent.trim() || !buildingId) return;
@@ -2158,16 +2939,46 @@ function BuildingsPage({
     };
 
     onAddRoom(newRoom);
-    setForm({ floor: "Ground", number: "", baseRent: "" });
+    setForm((f) => ({ ...f, number: "", baseRent: "" }));
     setSubmitted(true);
     setTimeout(() => setSubmitted(false), 3000);
   }
+
+  function startEditRoom(room: Room) {
+    setEditingRoomId(room.id);
+    setEditingRoom({
+      floor: room.floor,
+      number: room.number,
+      baseRent: room.baseRent.toString(),
+      buildingId: room.buildingId || buildingId,
+    });
+  }
+
+  function submitEditRoom(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editingRoomId) return;
+    const existing = rooms.find((r) => r.id === editingRoomId);
+    if (!existing) return;
+    onUpdateRoom({
+      ...existing,
+      floor: editingRoom.floor,
+      number: editingRoom.number.trim(),
+      baseRent: parseInt(editingRoom.baseRent, 10) || existing.baseRent,
+      buildingId: editingRoom.buildingId,
+    });
+    setEditingRoomId(null);
+  }
+
+  const currentFloorOptions = getBuildingFloors(buildingId);
+  const orphanRooms = rooms.filter(
+    (r) => !buildings.some((b) => b.id === r.buildingId),
+  );
 
   return (
     <div>
       <SectionHeader
         title="Buildings"
-        subtitle="Floor-by-floor room availability"
+        subtitle="Rooms grouped by building and floor"
       />
 
       <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
@@ -2189,7 +3000,8 @@ function BuildingsPage({
               marginBottom: 20,
             }}
           >
-            Add a new room to the selected building.
+            Add a new room to the selected building. Need a different floor
+            list? Configure it from Settings → Configure Floors.
           </div>
           <Divider />
           <form
@@ -2226,9 +3038,9 @@ function BuildingsPage({
               }
               required
             >
-              {FLOORS.map((floor) => (
+              {currentFloorOptions.map((floor) => (
                 <option key={floor} value={floor}>
-                  {FLOOR_LABELS[floor]}
+                  {floorLabel(floor)}
                 </option>
               ))}
             </Select>
@@ -2241,7 +3053,6 @@ function BuildingsPage({
               }
               required
             />
-
             <Input
               label="Base rent (RWF)"
               type="number"
@@ -2276,201 +3087,588 @@ function BuildingsPage({
           </form>
         </Card>
 
-        {FLOORS.map((floor) => {
-          const floorRooms = rooms.filter((r) => r.floor === floor);
-          const vacantCount = floorRooms.filter((r) => !r.occupied).length;
+        {/* Rooms grouped by building, then by that building's own floors */}
+        {buildings.map((building) => {
+          const buildingRooms = rooms.filter(
+            (r) => r.buildingId === building.id,
+          );
+          const floorsForBuilding = getBuildingFloors(building.id);
 
           return (
-            <div key={floor}>
+            <div key={building.id}>
               <div
                 style={{
                   display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "baseline",
-                  marginBottom: 14,
+                  alignItems: "center",
+                  gap: 10,
+                  marginBottom: 16,
                 }}
               >
                 <div
                   style={{
-                    fontWeight: 600,
-                    fontSize: 15,
-                    color: "var(--text)",
+                    width: 36,
+                    height: 36,
+                    borderRadius: 8,
+                    backgroundColor: "var(--accent)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    color: "#fff",
+                    flexShrink: 0,
                   }}
                 >
-                  {FLOOR_LABELS[floor]}
+                  <Building2 size={18} />
                 </div>
-                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                  <span className="mono">
-                    {floorRooms.length - vacantCount}
-                  </span>
-                  /{floorRooms.length} occupied
-                  {vacantCount > 0 && (
-                    <span
-                      style={{
-                        marginLeft: 8,
-                        color: "var(--status-paid)",
-                        fontWeight: 500,
-                      }}
-                    >
-                      · {vacantCount} vacant
-                    </span>
-                  )}
+                <div>
+                  <div
+                    style={{
+                      fontWeight: 700,
+                      fontSize: 16,
+                      color: "var(--text)",
+                    }}
+                  >
+                    {building.name}
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                    {buildingRooms.length} room
+                    {buildingRooms.length !== 1 ? "s" : ""}
+                  </div>
                 </div>
               </div>
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))",
-                  gap: 12,
-                }}
-                className="room-card-grid"
-              >
-                {floorRooms.map((room) => {
-                  const tenant = room.tenantId
-                    ? tenants.find((t) => t.id === room.tenantId)
-                    : null;
-                  const vacant = !room.occupied;
+
+              {buildingRooms.length === 0 ? (
+                <div
+                  style={{
+                    padding: "16px 4px 28px",
+                    color: "var(--text-muted)",
+                    fontSize: 13,
+                  }}
+                >
+                  No rooms registered in this building yet.
+                </div>
+              ) : (
+                floorsForBuilding.map((floor) => {
+                  const floorRooms = buildingRooms.filter(
+                    (r) => r.floor === floor,
+                  );
+                  if (floorRooms.length === 0) return null;
+                  const vacantCount = floorRooms.filter(
+                    (room) => !getTenantForRoom(room.id, tenants),
+                  ).length;
+                  const occupiedCount = floorRooms.length - vacantCount;
+
                   return (
-                    <div
-                      key={room.id}
-                      style={{
-                        padding: "16px 18px",
-                        backgroundColor: vacant
-                          ? "var(--status-paid-bg)"
-                          : "var(--surface)",
-                        border: `1.5px solid ${vacant ? "var(--status-paid)" : "var(--border)"}`,
-                        borderRadius: "var(--radius)",
-                        position: "relative",
-                        transition: "box-shadow 0.12s",
-                      }}
-                    >
+                    <div key={floor} style={{ marginBottom: 24 }}>
                       <div
                         style={{
                           display: "flex",
                           justifyContent: "space-between",
-                          alignItems: "flex-start",
-                          marginBottom: 10,
+                          alignItems: "baseline",
+                          marginBottom: 14,
                         }}
                       >
                         <div
-                          className="mono"
                           style={{
-                            fontSize: 16,
                             fontWeight: 600,
+                            fontSize: 15,
                             color: "var(--text)",
                           }}
                         >
-                          {room.number}
+                          {floorLabel(floor)}
                         </div>
-                        <div style={{ display: "flex", gap: 4 }}>
-                          <button
-                            onClick={() => {
-                              setEditingRoomId(room.id);
-                              setEditingRoom({
-                                floor: room.floor,
-                                number: room.number,
-                                baseRent: room.baseRent.toString(),
-                                buildingId: room.buildingId || "",
-                              });
-                            }}
-                            style={{
-                              background: "transparent",
-                              border: "none",
-                              cursor: "pointer",
-                              color: "var(--text-muted)",
-                              padding: 0,
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "center",
-                            }}
-                            title="Edit room"
-                          >
-                            <Edit2 size={14} />
-                          </button>
-                          <button
-                            onClick={() => {
-                              if (
-                                window.confirm(
-                                  "Are you sure you want to delete this room?",
-                                )
-                              ) {
-                                onDeleteRoom(room.id);
-                              }
-                            }}
-                            style={{
-                              background: "transparent",
-                              border: "none",
-                              cursor: "pointer",
-                              color: "var(--text-muted)",
-                              padding: 0,
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "center",
-                            }}
-                            title="Delete room"
-                          >
-                            <Trash2 size={14} />
-                          </button>
-                          <div
-                            style={{
-                              width: 8,
-                              height: 8,
-                              borderRadius: "50%",
-                              backgroundColor: vacant
-                                ? "var(--status-paid)"
-                                : "var(--text-muted)",
-                              marginTop: 2,
-                              boxShadow: vacant
-                                ? "0 0 0 3px var(--status-paid-bg)"
-                                : "none",
-                            }}
-                          />
+                        <div
+                          style={{ fontSize: 12, color: "var(--text-muted)" }}
+                        >
+                          <span className="mono">{occupiedCount}</span>/
+                          {floorRooms.length} occupied
+                          {vacantCount > 0 && (
+                            <span
+                              style={{
+                                marginLeft: 8,
+                                color: "var(--status-paid)",
+                                fontWeight: 500,
+                              }}
+                            >
+                              {" "}
+                              · {vacantCount} vacant
+                            </span>
+                          )}
                         </div>
                       </div>
-                      <div style={{ marginTop: 4 }}>
-                        {vacant ? (
-                          <div
-                            style={{
-                              fontSize: 11,
-                              fontWeight: 600,
-                              color: "var(--status-paid)",
-                              letterSpacing: "0.04em",
-                            }}
-                          >
-                            VACANT
-                          </div>
-                        ) : (
-                          <div
-                            style={{
-                              fontSize: 12,
-                              color: "var(--text-muted)",
-                              whiteSpace: "nowrap",
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                            }}
-                          >
-                            {tenant?.name}
-                          </div>
-                        )}
-                        <div
-                          className="mono"
-                          style={{
-                            fontSize: 11,
-                            color: "var(--text-muted)",
-                            marginTop: 4,
-                          }}
-                        >
-                          {fmtRWF(room.baseRent)}/mo
-                        </div>
+                      <div
+                        className="room-card-grid"
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns:
+                            "repeat(auto-fill, minmax(160px, 1fr))",
+                          gap: 12,
+                        }}
+                      >
+                        {floorRooms.map((room) => {
+                          const tenant = getTenantForRoom(room.id, tenants);
+                          const occupied = Boolean(tenant);
+                          return (
+                            <div
+                              key={room.id}
+                              className="room-card"
+                              onClick={() => setSelectedRoomId(room.id)}
+                              role="button"
+                              tabIndex={0}
+                              onKeyDown={(event) => {
+                                if (
+                                  event.key === "Enter" ||
+                                  event.key === " "
+                                ) {
+                                  event.preventDefault();
+                                  setSelectedRoomId(room.id);
+                                }
+                              }}
+                              style={{
+                                backgroundColor: occupied
+                                  ? "var(--surface)"
+                                  : "var(--status-paid-bg)",
+                                border: occupied
+                                  ? undefined
+                                  : "1.5px solid var(--status-paid)",
+                                cursor: "pointer",
+                                padding: 12,
+                                borderRadius: "var(--radius)",
+                              }}
+                            >
+                              <div
+                                style={{
+                                  display: "flex",
+                                  justifyContent: "space-between",
+                                  alignItems: "flex-start",
+                                  marginBottom: 10,
+                                }}
+                              >
+                                <div
+                                  className="mono"
+                                  style={{
+                                    fontWeight: 600,
+                                    fontSize: 14,
+                                    color: "var(--text)",
+                                  }}
+                                >
+                                  {room.number}
+                                </div>
+                                <div
+                                  style={{
+                                    display: "flex",
+                                    gap: 8,
+                                    alignItems: "center",
+                                  }}
+                                >
+                                  <div style={{ display: "flex", gap: 4 }}>
+                                    <button
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        startEditRoom(room);
+                                      }}
+                                      title="Edit room"
+                                      style={{
+                                        background: "transparent",
+                                        border: "none",
+                                        cursor: "pointer",
+                                        color: "var(--text-muted)",
+                                      }}
+                                    >
+                                      <Edit2 size={14} />
+                                    </button>
+                                    <button
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        if (
+                                          window.confirm(
+                                            "Are you sure you want to delete this room?",
+                                          )
+                                        ) {
+                                          onDeleteRoom(room.id);
+                                        }
+                                      }}
+                                      title="Delete room"
+                                      style={{
+                                        background: "transparent",
+                                        border: "none",
+                                        cursor: "pointer",
+                                        color: "var(--text-muted)",
+                                      }}
+                                    >
+                                      <Trash2 size={14} />
+                                    </button>
+                                  </div>
+                                  <div
+                                    style={{
+                                      width: 8,
+                                      height: 8,
+                                      borderRadius: "50%",
+                                      backgroundColor: occupied
+                                        ? "var(--text-muted)"
+                                        : "var(--status-paid)",
+                                      marginTop: 2,
+                                      boxShadow: occupied
+                                        ? "none"
+                                        : "0 0 0 3px var(--status-paid-bg)",
+                                    }}
+                                  />
+                                </div>
+                              </div>
+                              <div style={{ marginTop: 4 }}>
+                                <div style={{ marginBottom: 6 }}>
+                                  <StatusBadge
+                                    status={occupied ? "occupied" : "vacant"}
+                                  />
+                                </div>
+                                {occupied ? (
+                                  <div
+                                    style={{
+                                      fontSize: 13,
+                                      color: "var(--text)",
+                                      fontWeight: 500,
+                                    }}
+                                  >
+                                    {tenant?.name}
+                                  </div>
+                                ) : (
+                                  <div
+                                    style={{
+                                      fontSize: 12,
+                                      color: "var(--text-muted)",
+                                    }}
+                                  >
+                                    No tenant assigned
+                                  </div>
+                                )}
+                                <div
+                                  className="mono"
+                                  style={{
+                                    fontSize: 12,
+                                    color: "var(--text-muted)",
+                                    marginTop: 4,
+                                  }}
+                                >
+                                  {fmtRWF(room.baseRent)}/mo
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
                   );
-                })}
-              </div>
+                })
+              )}
             </div>
           );
         })}
+
+        {/* Rooms whose buildingId doesn't match any known building (legacy/orphan data) */}
+        {orphanRooms.length > 0 && (
+          <div>
+            <div
+              style={{
+                fontWeight: 700,
+                fontSize: 16,
+                color: "var(--text)",
+                marginBottom: 16,
+              }}
+            >
+              Unassigned Rooms
+            </div>
+            <div
+              className="room-card-grid"
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))",
+                gap: 12,
+              }}
+            >
+              {orphanRooms.map((room) => {
+                const tenant = getTenantForRoom(room.id, tenants);
+                const occupied = Boolean(tenant);
+                return (
+                  <div
+                    key={room.id}
+                    className="room-card"
+                    style={{
+                      padding: 12,
+                      borderRadius: "var(--radius)",
+                      backgroundColor: occupied
+                        ? "var(--surface)"
+                        : "var(--status-paid-bg)",
+                    }}
+                  >
+                    <div
+                      className="mono"
+                      style={{
+                        fontWeight: 600,
+                        fontSize: 14,
+                        color: "var(--text)",
+                        marginBottom: 6,
+                      }}
+                    >
+                      {floorLabel(room.floor)} · {room.number}
+                    </div>
+                    <StatusBadge status={occupied ? "occupied" : "vacant"} />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
+
+      {/* Room details panel */}
+      {selectedRoom && (
+        <div
+          onClick={() => setSelectedRoomId(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            backgroundColor: "rgba(15, 23, 42, 0.35)",
+            zIndex: 120,
+            display: "flex",
+            justifyContent: "flex-end",
+            padding: 20,
+          }}
+        >
+          <Card
+            onClick={(event) => event.stopPropagation()}
+            style={{
+              width: "min(430px, 100%)",
+              maxHeight: "calc(100vh - 40px)",
+              overflowY: "auto",
+              padding: 20,
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: 16,
+              }}
+            >
+              <div>
+                <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
+                  Room details
+                </div>
+                <div
+                  style={{
+                    fontWeight: 700,
+                    fontSize: 18,
+                    color: "var(--text)",
+                  }}
+                >
+                  {floorLabel(selectedRoom.floor)} · {selectedRoom.number}
+                </div>
+              </div>
+              <button
+                onClick={() => setSelectedRoomId(null)}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  cursor: "pointer",
+                  color: "var(--text-muted)",
+                  fontSize: 14,
+                }}
+                aria-label="Close room details"
+              >
+                Close
+              </button>
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  padding: "10px 12px",
+                  borderRadius: "var(--radius-sm)",
+                  backgroundColor: "var(--surface2)",
+                }}
+              >
+                <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
+                  Occupancy status
+                </div>
+                <StatusBadge status={selectedTenant ? "occupied" : "vacant"} />
+              </div>
+
+              <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
+                <div style={{ marginBottom: 4 }}>Room information</div>
+                <div style={{ color: "var(--text)", fontWeight: 500 }}>
+                  Floor: {floorLabel(selectedRoom.floor)}
+                </div>
+                <div style={{ color: "var(--text)", fontWeight: 500 }}>
+                  Room number: {selectedRoom.number}
+                </div>
+                <div style={{ color: "var(--text)", fontWeight: 500 }}>
+                  Base rent: {fmtRWF(selectedRoom.baseRent)}/mo
+                </div>
+              </div>
+
+              {selectedTenant ? (
+                <div
+                  style={{
+                    display: "grid",
+                    gap: 10,
+                    padding: "12px",
+                    borderRadius: "var(--radius-sm)",
+                    border: "1px solid var(--border)",
+                    backgroundColor: "var(--surface2)",
+                  }}
+                >
+                  <div style={{ fontWeight: 600, color: "var(--text)" }}>
+                    Tenant assigned
+                  </div>
+                  <div style={{ color: "var(--text)" }}>
+                    <div style={{ fontWeight: 600 }}>{selectedTenant.name}</div>
+                    {selectedTenant.phone ? (
+                      <div style={{ fontSize: 13, marginTop: 4 }}>
+                        Phone: {selectedTenant.phone}
+                      </div>
+                    ) : null}
+                    {selectedTenant.tinNumber ? (
+                      <div style={{ fontSize: 13, marginTop: 4 }}>
+                        TIN number: {selectedTenant.tinNumber}
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: 13, marginTop: 4 }}>
+                        TIN number: Not provided
+                      </div>
+                    )}
+                    <div style={{ fontSize: 13, marginTop: 4 }}>
+                      Monthly rent: {fmtRWF(selectedTenant.monthlyRent)}
+                    </div>
+                    <div style={{ fontSize: 13, marginTop: 4 }}>
+                      Due date: Day {selectedTenant.dueDay} of the month
+                    </div>
+                    <div style={{ fontSize: 13, marginTop: 4 }}>
+                      Start date: {selectedTenant.startDate}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div
+                  style={{
+                    padding: "14px",
+                    borderRadius: "var(--radius-sm)",
+                    border: "1px dashed var(--border)",
+                    color: "var(--text-muted)",
+                  }}
+                >
+                  No tenant assigned
+                </div>
+              )}
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {/* Edit room modal (was previously missing — CRUD is now complete) */}
+      {editingRoomId && (
+        <div
+          onClick={() => setEditingRoomId(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            backgroundColor: "rgba(15,23,42,0.35)",
+            zIndex: 130,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 20,
+          }}
+        >
+          <Card
+            onClick={(e) => e.stopPropagation()}
+            style={{ width: "min(420px, 100%)", padding: 20 }}
+          >
+            <div
+              style={{
+                fontWeight: 700,
+                fontSize: 16,
+                marginBottom: 16,
+                color: "var(--text)",
+              }}
+            >
+              Edit Room
+            </div>
+            <form
+              onSubmit={submitEditRoom}
+              style={{ display: "flex", flexDirection: "column", gap: 14 }}
+            >
+              <Select
+                label="Building"
+                value={editingRoom.buildingId}
+                onChange={(e) => {
+                  const bId = e.target.value;
+                  const floors = getBuildingFloors(bId);
+                  setEditingRoom((r) => ({
+                    ...r,
+                    buildingId: bId,
+                    floor: (floors[0] || "Ground") as Floor,
+                  }));
+                }}
+              >
+                {buildings.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name}
+                  </option>
+                ))}
+              </Select>
+              <Select
+                label="Floor"
+                value={editingRoom.floor}
+                onChange={(e) =>
+                  setEditingRoom((r) => ({
+                    ...r,
+                    floor: e.target.value as Floor,
+                  }))
+                }
+              >
+                {getBuildingFloors(editingRoom.buildingId).map((f) => (
+                  <option key={f} value={f}>
+                    {floorLabel(f)}
+                  </option>
+                ))}
+              </Select>
+              <Input
+                label="Room number"
+                value={editingRoom.number}
+                onChange={(e) =>
+                  setEditingRoom((r) => ({ ...r, number: e.target.value }))
+                }
+                required
+              />
+              <Input
+                label="Base rent (RWF)"
+                type="number"
+                value={editingRoom.baseRent}
+                onChange={(e) =>
+                  setEditingRoom((r) => ({ ...r, baseRent: e.target.value }))
+                }
+                required
+              />
+              <div style={{ display: "flex", gap: 8 }}>
+                <Button type="submit" style={{ flex: 1 }}>
+                  Save Changes
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={() => setEditingRoomId(null)}
+                  style={{ flex: 1 }}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </form>
+          </Card>
+        </div>
+      )}
     </div>
   );
 }
@@ -2487,10 +3685,8 @@ type Page =
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isSignedIn, isLoaded } = useAuth();
-
   if (!isLoaded) return null;
   if (!isSignedIn) return <Navigate to="/sign-in" replace />;
-
   return <>{children}</>;
 }
 
@@ -2642,7 +3838,6 @@ function Sidebar({
           </div>
         </div>
 
-        {/* Nav */}
         <div style={{ flex: 1, overflowY: "auto" }}>
           <nav style={{ padding: "12px 10px" }}>
             {NAV_ITEMS.map((item) => {
@@ -2650,8 +3845,6 @@ function Sidebar({
               return (
                 <button
                   key={item.id}
-                  // ISSUE 2 FIX: Navigation ONLY - never modifies collapsed state.
-                  // Sidebar collapse/expand is controlled exclusively by toggle button + fixed hamburger.
                   onClick={() => setPage(item.id)}
                   style={{
                     display: "flex",
@@ -2705,7 +3898,6 @@ function Sidebar({
           </nav>
         </div>
 
-        {/* Bottom: user + theme toggle */}
         <div
           style={{ padding: "14px 10px", borderTop: "1px solid var(--border)" }}
         >
@@ -2766,6 +3958,12 @@ function SettingsPage() {
   );
   const [saving, setSaving] = useState(false);
 
+  // Per-building floor configuration
+  const [floorsBuildingId, setFloorsBuildingId] = useState("");
+  const [floorList, setFloorList] = useState<string[]>([...FLOORS]);
+  const [newFloorName, setNewFloorName] = useState("");
+  const [floorsSaved, setFloorsSaved] = useState(false);
+
   useEffect(() => {
     let mounted = true;
     async function load() {
@@ -2776,6 +3974,9 @@ function SettingsPage() {
         if (!selectedBuilding && rows.length > 0) {
           setSelectedBuilding(rows[0].id);
         }
+        if (!floorsBuildingId && rows.length > 0) {
+          setFloorsBuildingId(rows[0].id);
+        }
       } catch (err) {
         console.error(err);
       }
@@ -2785,6 +3986,12 @@ function SettingsPage() {
       mounted = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (floorsBuildingId) {
+      setFloorList(getBuildingFloors(floorsBuildingId));
+    }
+  }, [floorsBuildingId]);
 
   async function handleAddBuilding() {
     const name = newBuildingName.trim();
@@ -2853,11 +4060,29 @@ function SettingsPage() {
     }
   }
 
+  function addFloor() {
+    const name = newFloorName.trim();
+    if (!name || floorList.includes(name)) return;
+    setFloorList((fl) => [...fl, name]);
+    setNewFloorName("");
+  }
+
+  function removeFloor(name: string) {
+    setFloorList((fl) => fl.filter((f) => f !== name));
+  }
+
+  function saveFloors() {
+    if (!floorsBuildingId || floorList.length === 0) return;
+    setBuildingFloorsStorage(floorsBuildingId, floorList);
+    setFloorsSaved(true);
+    setTimeout(() => setFloorsSaved(false), 3000);
+  }
+
   return (
     <div>
       <SectionHeader
         title="Settings"
-        subtitle="Manage buildings and configure active workspace"
+        subtitle="Manage buildings, floors, and your active workspace"
       />
 
       <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
@@ -2883,11 +4108,19 @@ function SettingsPage() {
           </div>
           <Divider />
 
-          <div style={{ display: "flex", gap: 12, marginTop: 12 }}>
+          <div
+            style={{
+              display: "flex",
+              gap: 12,
+              marginTop: 12,
+              flexWrap: "wrap",
+            }}
+          >
             <Input
               label="New building name"
               value={newBuildingName}
               onChange={(e) => setNewBuildingName(e.target.value)}
+              style={{ flex: "1 1 200px" }}
             />
             <div style={{ display: "flex", alignItems: "flex-end" }}>
               <Button
@@ -2909,12 +4142,19 @@ function SettingsPage() {
                   alignItems: "center",
                   padding: "8px 0",
                   borderBottom: "1px solid var(--border)",
+                  flexWrap: "wrap",
+                  gap: 8,
                 }}
               >
                 <div>
                   {editingId === b.id ? (
                     <div
-                      style={{ display: "flex", gap: 8, alignItems: "center" }}
+                      style={{
+                        display: "flex",
+                        gap: 8,
+                        alignItems: "center",
+                        flexWrap: "wrap",
+                      }}
                     >
                       <Input
                         value={editingName}
@@ -2979,12 +4219,143 @@ function SettingsPage() {
           </div>
         </Card>
 
+        {/* NEW: per-building floor configuration */}
+        <Card style={{ padding: 20 }}>
+          <div
+            style={{
+              fontWeight: 600,
+              fontSize: 14,
+              color: "var(--text)",
+              marginBottom: 4,
+            }}
+          >
+            Configure Floors
+          </div>
+          <div
+            style={{
+              fontSize: 12,
+              color: "var(--text-muted)",
+              marginBottom: 12,
+            }}
+          >
+            Each building can have its own set of floors — they don't need to
+            match.
+          </div>
+          <Divider />
+
+          <Select
+            label="Building"
+            value={floorsBuildingId}
+            onChange={(e) => setFloorsBuildingId(e.target.value)}
+            style={{ marginBottom: 16, maxWidth: 320 }}
+          >
+            {buildings.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.name}
+              </option>
+            ))}
+          </Select>
+
+          <div
+            style={{
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 8,
+              marginBottom: 16,
+            }}
+          >
+            {floorList.map((f) => (
+              <span
+                key={f}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  backgroundColor: "var(--surface2)",
+                  border: "1px solid var(--border)",
+                  borderRadius: 99,
+                  padding: "5px 10px",
+                  fontSize: 13,
+                  color: "var(--text)",
+                }}
+              >
+                {floorLabel(f)}
+                <button
+                  onClick={() => removeFloor(f)}
+                  title="Remove floor"
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    cursor: "pointer",
+                    color: "var(--text-muted)",
+                    display: "flex",
+                    padding: 0,
+                  }}
+                >
+                  <X size={12} />
+                </button>
+              </span>
+            ))}
+            {floorList.length === 0 && (
+              <span style={{ fontSize: 13, color: "var(--text-muted)" }}>
+                No floors configured yet.
+              </span>
+            )}
+          </div>
+
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+            <Input
+              label="New floor name"
+              placeholder="e.g. Mezzanine"
+              value={newFloorName}
+              onChange={(e) => setNewFloorName(e.target.value)}
+              style={{ flex: "1 1 200px" }}
+            />
+            <div style={{ display: "flex", alignItems: "flex-end", gap: 8 }}>
+              <Button
+                variant="secondary"
+                onClick={addFloor}
+                style={{ display: "flex", alignItems: "center", gap: 6 }}
+              >
+                <Plus size={14} /> Add Floor
+              </Button>
+              <Button onClick={saveFloors}>Save Floors</Button>
+            </div>
+          </div>
+
+          {floorsSaved && (
+            <div
+              style={{
+                marginTop: 14,
+                padding: "10px 14px",
+                backgroundColor: "var(--status-paid-bg)",
+                borderRadius: "var(--radius-sm)",
+                color: "var(--status-paid)",
+                fontSize: 13,
+                fontWeight: 500,
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+              }}
+            >
+              {Icon.check} Floors saved for this building.
+            </div>
+          )}
+        </Card>
+
         <Card style={{ padding: 20 }}>
           <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8 }}>
             Active management
           </div>
-          <div style={{ display: "flex", gap: 12, alignItems: "flex-end" }}>
-            <div style={{ flex: 1 }}>
+          <div
+            style={{
+              display: "flex",
+              gap: 12,
+              alignItems: "flex-end",
+              flexWrap: "wrap",
+            }}
+          >
+            <div style={{ flex: "1 1 180px" }}>
               <Select
                 value={selectedBuilding}
                 onChange={(e) => setSelectedBuilding(e.target.value)}
@@ -2997,15 +4368,15 @@ function SettingsPage() {
                 ))}
               </Select>
             </div>
-            <div style={{ width: 180 }}>
+            <div style={{ flex: "1 1 140px" }}>
               <Select
                 label="Floor"
                 value={selectedFloor}
                 onChange={(e) => setSelectedFloor(e.target.value as Floor)}
               >
-                {FLOORS.map((f) => (
+                {getBuildingFloors(selectedBuilding).map((f) => (
                   <option key={f} value={f}>
-                    {FLOOR_LABELS[f]}
+                    {floorLabel(f)}
                   </option>
                 ))}
               </Select>
@@ -3036,7 +4407,7 @@ export default function App() {
     return window.innerWidth < 768;
   });
   const [rooms, setRooms] = useState<Room[]>([]);
-  const [tenants, setTenants] = useState<Tenant[]>([]);
+  const [tenants, setTenants] = useState<TenantWithTin[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -3085,17 +4456,64 @@ export default function App() {
     loadData();
   }, []);
 
-  async function handleAddTenant(newTenant: Tenant, room: Room) {
+  async function handleAddTenant(newTenant: TenantWithTin, room: Room) {
     try {
-      const savedTenant = await addTenant({
-        ...newTenant,
-        room_id: room.id,
-      });
-      setTenants((ts) => [...ts, savedTenant as Tenant]);
-      setRooms((rs) => rs.map((r) => (r.id === room.id ? { ...r } : r)));
+      const savedTenant = await addTenant({ ...newTenant, room_id: room.id });
+      setTenants((ts) => [...ts, savedTenant as TenantWithTin]);
+      // FIX: actually mark the room occupied (this used to spread the room
+      // without setting occupied:true, which is part of why the Dashboard
+      // could show stale numbers).
+      setRooms((rs) =>
+        rs.map((r) => (r.id === room.id ? { ...r, occupied: true } : r)),
+      );
     } catch (err) {
       console.error("Failed to add tenant", err);
       setError("Failed to add tenant");
+    }
+  }
+
+  async function handleUpdateTenant(updated: TenantWithTin) {
+    try {
+      const saved = await updateTenant(updated.id, {
+        name: updated.name,
+        phone: updated.phone,
+        tinNumber: updated.tinNumber,
+        roomId: updated.roomId,
+        monthlyRent: updated.monthlyRent,
+        dueDay: updated.dueDay,
+      });
+      setTenants((ts) =>
+        ts.map((t) =>
+          t.id === updated.id ? ((saved as TenantWithTin) ?? updated) : t,
+        ),
+      );
+      setRooms((rs) =>
+        rs.map((r) => {
+          if (r.id === updated.roomId) return { ...r, occupied: true };
+          return r;
+        }),
+      );
+    } catch (err) {
+      console.error("Failed to update tenant", err);
+      setError("Failed to update tenant");
+    }
+  }
+
+  async function handleDeleteTenant(tenantId: string) {
+    try {
+      const tenant = tenants.find((t) => t.id === tenantId);
+      await deleteTenant(tenantId);
+      setTenants((ts) => ts.filter((t) => t.id !== tenantId));
+      if (tenant) {
+        setRooms((rs) =>
+          rs.map((r) =>
+            r.id === tenant.roomId ? { ...r, occupied: false } : r,
+          ),
+        );
+      }
+    } catch (err) {
+      console.error("Failed to delete tenant", err);
+      setError("Failed to delete tenant");
     }
   }
 
@@ -3162,7 +4580,6 @@ export default function App() {
           overflow: "hidden",
         }}
       >
-        {/* Fixed mobile hamburger button (Issue 1) */}
         {isMobileView && (
           <button
             onClick={() => setSidebarCollapsed((v) => !v)}
@@ -3182,6 +4599,7 @@ export default function App() {
               justifyContent: "center",
               color: "var(--text)",
               padding: 0,
+              boxShadow: "var(--shadow)",
             }}
             aria-label="Toggle navigation menu"
             title="Toggle navigation menu"
@@ -3201,12 +4619,8 @@ export default function App() {
         />
 
         <main
-          style={{
-            flex: 1,
-            overflowY: "auto",
-            padding: 20,
-            minHeight: "100vh",
-          }}
+          className="main-content"
+          style={{ flex: 1, overflowY: "auto", minHeight: "100vh" }}
         >
           {error ? (
             <div
@@ -3239,6 +4653,8 @@ export default function App() {
                   rooms={rooms}
                   tenants={tenants}
                   onAddTenant={handleAddTenant}
+                  onUpdateTenant={handleUpdateTenant}
+                  onDeleteTenant={handleDeleteTenant}
                 />
               )}
               {page === "payments" && (
@@ -3274,127 +4690,116 @@ export default function App() {
   }
 
   return (
-    <Routes>
-      <Route path="/" element={<WelcomePage />} />
-      <Route
-        path="/sign-in"
-        element={
-          <div
-            style={{
-              minHeight: "100vh",
-              width: "100%",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              padding: "24px",
-              backgroundColor: "var(--bg)",
-            }}
-          >
-            <SignIn
-              routing="path"
-              path="/sign-in"
-              signUpUrl="/sign-up"
-              fallbackRedirectUrl="/dashboard"
-              appearance={{
-                variables: {
-                  colorPrimary: "#2F6F5E",
-                  colorText: "#1A2233",
-                  colorTextSecondary: "#5B6472",
-                  colorBackground: "#FFFFFF",
-                  colorInputBackground: "#F7F8FA",
-                  colorInputText: "#1A2233",
-                  borderRadius: "8px",
-                  fontFamily: "Inter, system-ui, -apple-system, sans-serif",
-                },
-                elements: {
-                  card: {
-                    border: "1px solid #E4E7EC",
-                    boxShadow: "none",
-                  },
-                  formButtonPrimary: {
-                    backgroundColor: "#2F6F5E",
-                    color: "#FFFFFF",
-                    "&:hover": {
-                      opacity: 0.9,
-                    },
-                  },
-                  formFieldInput: {
-                    borderColor: "#E4E7EC",
-                  },
-                },
+    <>
+      <GlobalStyles />
+      <Routes>
+        <Route path="/" element={<WelcomePage />} />
+        <Route
+          path="/sign-in"
+          element={
+            <div
+              style={{
+                minHeight: "100vh",
+                width: "100%",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: "24px",
+                backgroundColor: "var(--bg)",
               }}
-            />
-          </div>
-        }
-      />
-      <Route
-        path="/sign-up"
-        element={
-          <div
-            style={{
-              minHeight: "100vh",
-              width: "100%",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              padding: "24px",
-              backgroundColor: "var(--bg)",
-            }}
-          >
-            <SignUp
-              routing="path"
-              path="/sign-up"
-              signInUrl="/sign-in"
-              fallbackRedirectUrl="/dashboard"
-              appearance={{
-                variables: {
-                  colorPrimary: "#2F6F5E",
-                  colorText: "#1A2233",
-                  colorTextSecondary: "#5B6472",
-                  colorBackground: "#FFFFFF",
-                  colorInputBackground: "#F7F8FA",
-                  colorInputText: "#1A2233",
-                  borderRadius: "8px",
-                  fontFamily: "Inter, system-ui, -apple-system, sans-serif",
-                },
-                elements: {
-                  card: {
-                    border: "1px solid #E4E7EC",
-                    boxShadow: "none",
+            >
+              <SignIn
+                routing="path"
+                path="/sign-in"
+                signUpUrl="/sign-up"
+                fallbackRedirectUrl="/dashboard"
+                appearance={{
+                  variables: {
+                    colorPrimary: "#2F6F5E",
+                    colorText: "#1A2233",
+                    colorTextSecondary: "#5B6472",
+                    colorBackground: "#FFFFFF",
+                    colorInputBackground: "#F7F8FA",
+                    colorInputText: "#1A2233",
+                    borderRadius: "8px",
+                    fontFamily: "Inter, system-ui, -apple-system, sans-serif",
                   },
-                  formButtonPrimary: {
-                    backgroundColor: "#2F6F5E",
-                    color: "#FFFFFF",
-                    "&:hover": {
-                      opacity: 0.9,
+                  elements: {
+                    card: { border: "1px solid #E4E7EC", boxShadow: "none" },
+                    formButtonPrimary: {
+                      backgroundColor: "#2F6F5E",
+                      color: "#FFFFFF",
+                      "&:hover": { opacity: 0.9 },
                     },
+                    formFieldInput: { borderColor: "#E4E7EC" },
                   },
-                  formFieldInput: {
-                    borderColor: "#E4E7EC",
-                  },
-                },
+                }}
+              />
+            </div>
+          }
+        />
+        <Route
+          path="/sign-up"
+          element={
+            <div
+              style={{
+                minHeight: "100vh",
+                width: "100%",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: "24px",
+                backgroundColor: "var(--bg)",
               }}
-            />
-          </div>
-        }
-      />
-      <Route
-        path="/settings"
-        element={
-          <ProtectedRoute>
-            <SettingsPage />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/dashboard"
-        element={
-          <ProtectedRoute>
-            <DashboardShell />
-          </ProtectedRoute>
-        }
-      />
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+            >
+              <SignUp
+                routing="path"
+                path="/sign-up"
+                signInUrl="/sign-in"
+                fallbackRedirectUrl="/dashboard"
+                appearance={{
+                  variables: {
+                    colorPrimary: "#2F6F5E",
+                    colorText: "#1A2233",
+                    colorTextSecondary: "#5B6472",
+                    colorBackground: "#FFFFFF",
+                    colorInputBackground: "#F7F8FA",
+                    colorInputText: "#1A2233",
+                    borderRadius: "8px",
+                    fontFamily: "Inter, system-ui, -apple-system, sans-serif",
+                  },
+                  elements: {
+                    card: { border: "1px solid #E4E7EC", boxShadow: "none" },
+                    formButtonPrimary: {
+                      backgroundColor: "#2F6F5E",
+                      color: "#FFFFFF",
+                      "&:hover": { opacity: 0.9 },
+                    },
+                    formFieldInput: { borderColor: "#E4E7EC" },
+                  },
+                }}
+              />
+            </div>
+          }
+        />
+        <Route
+          path="/settings"
+          element={
+            <ProtectedRoute>
+              <SettingsPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/dashboard"
+          element={
+            <ProtectedRoute>
+              <DashboardShell />
+            </ProtectedRoute>
+          }
+        />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </>
   );
 }
