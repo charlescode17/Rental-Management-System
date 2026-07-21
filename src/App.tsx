@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { SignIn, SignUp, useAuth } from "@clerk/clerk-react";
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard,
   Users,
@@ -18,6 +18,11 @@ import {
   Settings,
   List,
   LayoutGrid,
+  ArrowRight,
+  BellRing,
+  CalendarDays,
+  Search,
+  SlidersHorizontal,
 } from "lucide-react";
 import WelcomePage from "./WelcomePage";
 import UserMenu from "./UserMenu";
@@ -64,6 +69,27 @@ function tagLabel(daysOffset: number): string {
   if (tag === "early") return `${d}d early`;
   if (tag === "on-time") return "On time";
   return `${d}d late`;
+}
+
+function initials(name: string) {
+  return name
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join("");
+}
+
+function roomLocation(
+  room: Room | undefined,
+  buildings?: Array<{ id: string; name: string }>,
+) {
+  if (!room) return "—";
+  const buildingName =
+    room.buildingName ??
+    buildings?.find((building) => building.id === room.buildingId)?.name;
+  const floorAndRoom = `${floorLabel(room.floor)} · ${room.number}`;
+  return buildingName ? `${buildingName} · ${floorAndRoom}` : floorAndRoom;
 }
 
 function paidThisMonth(tenantId: string, payments: Payment[]) {
@@ -213,11 +239,89 @@ const GLOBAL_CSS = `
 }
 .room-card { transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease; }
 .room-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md, 0 8px 22px rgba(0,0,0,0.08)); }
+.room-view-toolbar { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: -12px; color: var(--text-muted); font-size: 12px; }
+.room-view-toggle { display: inline-flex; gap: 3px; padding: 3px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow); }
+.room-view-toggle button { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 10px; border: 0; border-radius: 6px; background: transparent; color: var(--text-muted); font-size: 12px; font-weight: 600; cursor: pointer; }
+.room-view-toggle button:hover, .room-view-toggle button.is-active { background: var(--nav-active-bg); color: var(--accent); }
+.room-list { overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); }
+.room-list-row { display: grid; grid-template-columns: 110px minmax(0, 1fr) auto 82px; gap: 16px; align-items: center; padding: 13px 16px; border-bottom: 1px solid var(--border); cursor: pointer; transition: background-color .15s ease; }
+.room-list-row:last-child { border-bottom: 0; }
+.room-list-row:hover, .room-list-row:focus-visible { background: var(--nav-hover-bg); outline: none; }
+.room-list-number { color: var(--text); font-size: 14px; font-weight: 650; }
+.room-list-tenant { display: flex; flex-direction: column; min-width: 0; gap: 3px; }
+.room-list-tenant strong { overflow: hidden; color: var(--text); font-size: 13px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+.room-list-tenant span { color: var(--text-muted); font-size: 11px; }
+.room-list-actions { display: flex; justify-content: flex-end; gap: 4px; }
+.room-list-actions button { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--text-muted); cursor: pointer; }
+.room-list-actions button:hover { background: var(--surface2); color: var(--text); }
+@media (max-width: 540px) {
+  .room-view-toolbar { justify-content: space-between; margin-top: -8px; }
+  .room-list-row { grid-template-columns: 70px minmax(0, 1fr) auto; gap: 10px; padding: 12px; }
+  .room-list-actions { grid-column: 1 / -1; justify-content: flex-start; border-top: 1px solid var(--border); padding-top: 8px; }
+}
 
 .tenant-card { transition: transform 0.15s ease, box-shadow 0.15s ease; }
 .tenant-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md, 0 8px 22px rgba(0,0,0,0.08)); }
 @media (max-width: 420px) {
   .tenant-card-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)) !important; gap: 8px !important; }
+}
+
+.reminder-widget { overflow: hidden; }
+.reminder-widget-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 22px 24px 18px; border-bottom: 1px solid var(--border); }
+.reminder-widget-title-row { display: flex; align-items: center; gap: 8px; color: var(--text); }
+.reminder-widget-title-row h2 { margin: 0; font-size: 15px; font-weight: 650; }
+.reminder-widget-header p { margin: 5px 0 0 25px; color: var(--text-muted); font-size: 12px; }
+.reminder-count, .notifications-count { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; height: 22px; padding: 0 7px; border-radius: 999px; background: var(--nav-active-bg); color: var(--accent); font-size: 11px; font-weight: 700; }
+.reminder-view-all, .back-link { display: inline-flex; align-items: center; gap: 6px; border: 0; background: transparent; color: var(--accent); font-size: 12px; font-weight: 650; cursor: pointer; padding: 5px 0; white-space: nowrap; }
+.reminder-view-all:hover, .back-link:hover { color: var(--accent-hover); }
+.reminder-list { max-height: 390px; overflow-y: auto; padding: 6px 10px; }
+.reminder-item { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 14px; border-radius: 10px; transition: background-color .16s ease, transform .16s ease; }
+.reminder-item:hover { background: var(--nav-hover-bg); transform: translateX(2px); }
+.reminder-avatar { display: grid; place-items: center; flex: 0 0 38px; width: 38px; height: 38px; border-radius: 50%; background: var(--nav-active-bg); color: var(--accent); font-size: 12px; font-weight: 700; }
+.reminder-avatar.is-overdue { background: var(--status-overdue-bg); color: var(--status-overdue); }
+.reminder-main { min-width: 0; flex: 1; }
+.reminder-name-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.reminder-name-row strong { overflow: hidden; color: var(--text); font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.reminder-name-row .status-badge { flex: 0 0 auto; }
+.reminder-meta { margin-top: 3px; overflow: hidden; color: var(--text-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.reminder-status { display: flex; flex: 0 0 auto; flex-direction: column; align-items: flex-end; gap: 3px; color: var(--status-due); font-size: 11px; text-align: right; }
+.reminder-status.is-overdue { color: var(--status-overdue); }
+.reminder-status strong { color: var(--text-muted); font-size: 11px; font-weight: 500; }
+.reminder-empty, .notifications-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px; min-height: 190px; padding: 28px 20px; text-align: center; }
+.reminder-empty strong, .notifications-empty strong { color: var(--text); font-size: 14px; }
+.reminder-empty span, .notifications-empty span { color: var(--text-muted); font-size: 12px; }
+.reminder-empty-icon { display: grid; place-items: center; width: 44px; height: 44px; margin-bottom: 4px; border-radius: 50%; background: var(--nav-active-bg); color: var(--accent); }
+.notifications-page { width: 100%; max-width: 1040px; margin: 0 auto; }
+.notifications-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin-bottom: 24px; }
+.notifications-header .section-title { margin-top: 4px; }
+.notifications-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 18px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); box-shadow: var(--shadow); }
+.notification-search, .notification-sort { display: flex; align-items: center; gap: 8px; min-height: 38px; padding: 0 11px; border: 1px solid var(--input-border); border-radius: 7px; background: var(--input-bg); color: var(--text-muted); }
+.notification-search { flex: 1 1 210px; }
+.notification-search input { width: 100%; border: 0; outline: 0; background: transparent; color: var(--text); }
+.notification-sort { flex: 0 1 160px; }
+.notification-sort select { width: 100%; border: 0; outline: 0; background: transparent; color: var(--text); cursor: pointer; }
+.notification-filters { display: flex; gap: 3px; padding: 3px; border-radius: 8px; background: var(--surface2); }
+.notification-filters button { min-height: 32px; padding: 0 12px; border: 0; border-radius: 6px; background: transparent; color: var(--text-muted); font-size: 12px; font-weight: 600; cursor: pointer; }
+.notification-filters button:hover, .notification-filters button.is-active { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+.notifications-list { display: grid; gap: 10px; }
+.notification-card { display: flex; align-items: center; gap: 2px; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); box-shadow: var(--shadow); transition: transform .16s ease, box-shadow .16s ease, border-color .16s ease; }
+.notification-card:hover { border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); transform: translateY(-2px); box-shadow: var(--shadow-md); }
+.notification-card .reminder-item { flex: 1; }
+.notification-icon { display: grid; place-items: center; flex: 0 0 42px; height: 42px; margin-left: 14px; border-radius: 9px; background: var(--surface2); color: var(--text-muted); }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+@media (max-width: 640px) {
+  .reminder-widget-header { padding: 18px 16px 15px; }
+  .reminder-list { padding: 4px 6px; }
+  .reminder-item { padding: 12px 8px; }
+  .reminder-status { max-width: 112px; font-size: 10px; }
+  .reminder-status strong { font-size: 10px; }
+  .notifications-header { align-items: flex-start; flex-direction: column; margin-bottom: 18px; }
+  .notifications-toolbar { align-items: stretch; flex-direction: column; }
+  .notification-search, .notification-sort { flex-basis: auto; width: 100%; }
+  .notification-filters { justify-content: stretch; }
+  .notification-filters button { flex: 1; padding: 0 7px; }
+  .notification-card { align-items: flex-start; }
+  .notification-icon { margin: 14px 0 0 10px; }
 }
 
 /* Generic hoverable data rows */
@@ -243,12 +347,66 @@ const GLOBAL_CSS = `
   gap: 12px;
   align-items: center;
 }
+.payment-header-actions { display: flex; align-items: center; gap: 14px; }
+.payment-view-toggle { display: inline-flex; gap: 3px; padding: 3px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.payment-view-toggle button { display: inline-flex; align-items: center; gap: 5px; min-height: 29px; padding: 0 8px; border: 0; border-radius: 5px; background: transparent; color: var(--text-muted); font-size: 11px; font-weight: 600; cursor: pointer; }
+.payment-view-toggle button:hover, .payment-view-toggle button.is-active { background: var(--nav-active-bg); color: var(--accent); }
+.payment-table-header { padding: 10px 20px; background: var(--surface2); border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+.payment-row { cursor: pointer; }
+.payment-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.payment-tenant-name { color: var(--text); font-size: 13px; font-weight: 500; }
+.payment-tenant-meta { margin-top: 1px; overflow: hidden; color: var(--text-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.payment-muted-cell { color: var(--text-muted); font-size: 13px; }
+.payment-amount { color: var(--text); font-size: 13px; font-weight: 500; }
+.payment-card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; padding: 16px; }
+.payment-card { display: flex; flex-direction: column; align-items: flex-start; min-height: 172px; padding: 15px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); text-align: left; cursor: pointer; box-shadow: var(--shadow); transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease; }
+.payment-card:hover, .payment-card:focus-visible { border-color: var(--accent); transform: translateY(-2px); box-shadow: var(--shadow-md); outline: none; }
+.payment-card-topline { display: flex; align-items: center; justify-content: space-between; width: 100%; margin-bottom: 15px; }
+.payment-card-icon { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 7px; background: var(--nav-active-bg); color: var(--accent); }
+.payment-card strong { overflow: hidden; max-width: 100%; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.payment-card-location, .payment-card-meta { margin-top: 4px; overflow: hidden; max-width: 100%; color: var(--text-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.payment-card-amount { margin-top: auto; padding-top: 16px; font-size: 17px; font-weight: 650; }
+.payment-empty { padding: 38px 20px; color: var(--text-muted); font-size: 13px; text-align: center; }
+.payment-detail-backdrop { position: fixed; inset: 0; z-index: 120; display: flex; align-items: center; justify-content: center; padding: 20px; background: rgba(15, 23, 42, .35); }
+.payment-detail-panel { width: min(470px, 100%); padding: 22px; }
+.payment-detail-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
+.payment-detail-eyebrow { color: var(--text-muted); font-size: 11px; }
+.payment-detail-header h2 { margin: 4px 0 0; color: var(--text); font-size: 18px; }
+.payment-detail-close { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--text-muted); cursor: pointer; }
+.payment-detail-close:hover { background: var(--surface2); color: var(--text); }
+.payment-detail-status { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 0; }
+.payment-detail-status strong { color: var(--text); font-size: 20px; }
+.payment-detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.payment-detail-grid > div { display: flex; flex-direction: column; gap: 3px; padding: 11px 12px; border-radius: var(--radius-sm); background: var(--surface2); }
+.payment-detail-grid span { color: var(--text-muted); font-size: 11px; }
+.payment-detail-grid strong { color: var(--text); font-size: 12px; font-weight: 600; }
 @media (max-width: 640px) {
   .tbl-payments { grid-template-columns: 1fr 100px; }
   .payment-col-months, .payment-col-tag { display: none; }
+  .payment-header-actions { gap: 8px; }
+  .payment-header-actions > .mono { display: none; }
+  .payment-detail-grid { grid-template-columns: 1fr; }
 }
 
 .tenants-toolbar { flex-wrap: wrap; }
+
+/* Settings page responsive layout */
+.settings-page {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  width: 100%;
+}
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+}
+@media (max-width: 900px) {
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
+}
 
 /* Accessible focus rings */
 button:focus-visible, input:focus-visible, select:focus-visible {
@@ -795,6 +953,225 @@ function Divider() {
 
 // ─── Page: Dashboard ─────────────────────────────────────────────────────────
 
+function ReminderItem({ row }: { row: ReminderRow }) {
+  const overdue = row.status === "overdue";
+  const statusText = overdue
+    ? `${row.daysOverdue} day${row.daysOverdue !== 1 ? "s" : ""} overdue`
+    : row.daysUntilDue === 0
+      ? "Due today"
+      : `Due in ${row.daysUntilDue} day${row.daysUntilDue !== 1 ? "s" : ""}`;
+
+  return (
+    <div className="reminder-item">
+      <div className={`reminder-avatar ${overdue ? "is-overdue" : ""}`}>
+        {initials(row.tenant.name)}
+      </div>
+      <div className="reminder-main">
+        <div className="reminder-name-row">
+          <strong>{row.tenant.name}</strong>
+          <StatusBadge status={overdue ? "overdue" : "due-soon"} />
+        </div>
+        <div className="reminder-meta">
+          {roomLocation(row.room)} · Due on the {row.tenant.dueDay}
+          {row.tenant.dueDay === 1
+            ? "st"
+            : row.tenant.dueDay === 2
+              ? "nd"
+              : row.tenant.dueDay === 3
+                ? "rd"
+                : "th"}
+        </div>
+      </div>
+      <div className={`reminder-status ${overdue ? "is-overdue" : ""}`}>
+        <span>{statusText}</span>
+        {row.tenant.monthlyRent ? (
+          <strong className="mono">{fmtRWF(row.tenant.monthlyRent)}</strong>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function ReminderWidget({ reminders }: { reminders: ReminderRow[] }) {
+  const navigate = useNavigate();
+
+  return (
+    <Card className="reminder-widget">
+      <div className="reminder-widget-header">
+        <div>
+          <div className="reminder-widget-title-row">
+            <BellRing size={17} aria-hidden="true" />
+            <h2>Rent Reminders</h2>
+            <span
+              className="reminder-count"
+              aria-label={`${reminders.length} reminders`}
+            >
+              {reminders.length}
+            </span>
+          </div>
+          <p>Tenants requiring follow-up as of today</p>
+        </div>
+        <button
+          type="button"
+          className="reminder-view-all"
+          onClick={() => navigate("/notifications")}
+          aria-label="View all rent reminders"
+        >
+          View All <ArrowRight size={15} aria-hidden="true" />
+        </button>
+      </div>
+      {reminders.length === 0 ? (
+        <div className="reminder-empty">
+          <div className="reminder-empty-icon">
+            <BellRing size={20} />
+          </div>
+          <strong>No pending reminders</strong>
+          <span>All tenants are up to date with their rent payments.</span>
+        </div>
+      ) : (
+        <div className="reminder-list" aria-label="Rent reminders">
+          {reminders.map((row) => (
+            <ReminderItem key={row.tenant.id} row={row} />
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function NotificationsPage({
+  rooms,
+  tenants,
+  payments,
+}: {
+  rooms: Room[];
+  tenants: Tenant[];
+  payments: Payment[];
+}) {
+  const navigate = useNavigate();
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<"all" | "overdue" | "due-soon">("all");
+  const [sort, setSort] = useState<"overdue" | "today" | "soon">("overdue");
+  const reminders = useMemo(
+    () => buildReminders(tenants, rooms, payments),
+    [tenants, rooms, payments],
+  );
+  const filteredReminders = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+    return reminders
+      .filter((row) => filter === "all" || row.status === filter)
+      .filter(
+        (row) =>
+          !normalizedQuery ||
+          row.tenant.name.toLowerCase().includes(normalizedQuery),
+      )
+      .sort((a, b) => {
+        if (sort === "today") {
+          return (
+            (a.status === "due-soon" ? a.daysUntilDue : 99) -
+            (b.status === "due-soon" ? b.daysUntilDue : 99)
+          );
+        }
+        if (sort === "soon") {
+          const days = (row: ReminderRow) =>
+            row.status === "overdue" ? row.daysOverdue + 100 : row.daysUntilDue;
+          return days(a) - days(b);
+        }
+        return (
+          (b.status === "overdue" ? b.daysOverdue : -1) -
+          (a.status === "overdue" ? a.daysOverdue : -1)
+        );
+      });
+  }, [filter, query, reminders, sort]);
+
+  return (
+    <div className="notifications-page">
+      <div className="notifications-header">
+        <div>
+          <button
+            type="button"
+            className="back-link"
+            onClick={() => navigate("/dashboard")}
+          >
+            <ArrowRight size={15} style={{ transform: "rotate(180deg)" }} />{" "}
+            Dashboard
+          </button>
+          <SectionHeader
+            title="Notifications"
+            subtitle="Stay updated with overdue and upcoming rent payments."
+          />
+        </div>
+        <span className="notifications-count">
+          {reminders.length} notifications
+        </span>
+      </div>
+
+      <div className="notifications-toolbar" role="search">
+        <label className="notification-search">
+          <Search size={17} aria-hidden="true" />
+          <span className="sr-only">Search tenants</span>
+          <input
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search tenants"
+          />
+        </label>
+        <div className="notification-filters" aria-label="Filter notifications">
+          {(["all", "overdue", "due-soon"] as const).map((value) => (
+            <button
+              type="button"
+              key={value}
+              className={filter === value ? "is-active" : ""}
+              onClick={() => setFilter(value)}
+              aria-pressed={filter === value}
+            >
+              {value === "all"
+                ? "All"
+                : value === "overdue"
+                  ? "Overdue"
+                  : "Due Soon"}
+            </button>
+          ))}
+        </div>
+        <label className="notification-sort">
+          <SlidersHorizontal size={16} aria-hidden="true" />
+          <span className="sr-only">Sort notifications</span>
+          <select
+            value={sort}
+            onChange={(event) => setSort(event.target.value as typeof sort)}
+          >
+            <option value="overdue">Most overdue</option>
+            <option value="today">Due today</option>
+            <option value="soon">Due soon</option>
+          </select>
+        </label>
+      </div>
+
+      {filteredReminders.length === 0 ? (
+        <div className="notifications-empty">
+          <div className="reminder-empty-icon">
+            <BellRing size={22} />
+          </div>
+          <strong>No pending reminders</strong>
+          <span>All tenants are up to date with their rent payments.</span>
+        </div>
+      ) : (
+        <div className="notifications-list">
+          {filteredReminders.map((row) => (
+            <div className="notification-card" key={row.tenant.id}>
+              <div className="notification-icon">
+                <CalendarDays size={18} />
+              </div>
+              <ReminderItem row={row} />
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DashboardPage({
   rooms,
   tenants,
@@ -954,130 +1331,7 @@ function DashboardPage({
         </Card>
       </div>
 
-      <Card>
-        <div
-          style={{
-            padding: "20px 24px 16px",
-            borderBottom: "1px solid var(--border)",
-          }}
-        >
-          <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>
-            Reminders
-          </div>
-          <div
-            style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}
-          >
-            Tenants requiring follow-up as of today
-          </div>
-        </div>
-        {reminders.length === 0 ? (
-          <div
-            style={{
-              padding: "40px 24px",
-              textAlign: "center",
-              color: "var(--text-muted)",
-              fontSize: 13,
-            }}
-          >
-            All tenants are up to date.
-          </div>
-        ) : (
-          <div style={{ overflowX: "auto" }}>
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "1fr 140px 130px 110px",
-                gap: 12,
-                padding: "10px 24px",
-                backgroundColor: "var(--surface2)",
-                borderBottom: "1px solid var(--border)",
-                minWidth: "480px",
-              }}
-            >
-              {["Tenant", "Location", "Due status", "Status"].map((h) => (
-                <div
-                  key={h}
-                  style={{
-                    fontSize: 11,
-                    fontWeight: 600,
-                    letterSpacing: "0.06em",
-                    textTransform: "uppercase",
-                    color: "var(--text-muted)",
-                  }}
-                >
-                  {h}
-                </div>
-              ))}
-            </div>
-            {reminders.map((row, i) => (
-              <div
-                key={row.tenant.id}
-                className="table-row"
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr 140px 130px 110px",
-                  gap: 12,
-                  padding: "14px 24px",
-                  alignItems: "center",
-                  borderBottom:
-                    i < reminders.length - 1
-                      ? "1px solid var(--border)"
-                      : "none",
-                  backgroundColor: "transparent",
-                  minWidth: "480px",
-                }}
-              >
-                <div>
-                  <div
-                    style={{
-                      fontWeight: 500,
-                      color: "var(--text)",
-                      fontSize: 13,
-                    }}
-                  >
-                    {row.tenant.name}
-                  </div>
-                  <div
-                    style={{
-                      fontSize: 11,
-                      color: "var(--text-muted)",
-                      marginTop: 2,
-                    }}
-                  >
-                    Due on the {row.tenant.dueDay}
-                    {["st", "nd", "rd"][row.tenant.dueDay - 1] || "th"}
-                  </div>
-                </div>
-                <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
-                  {row.room.floor === "Ground" ? "GF" : row.room.floor} · Room{" "}
-                  {row.room.number}
-                </div>
-                <div
-                  className="mono"
-                  style={{
-                    fontSize: 12,
-                    color:
-                      row.status === "overdue"
-                        ? "var(--status-overdue)"
-                        : "var(--status-due)",
-                  }}
-                >
-                  {row.status === "overdue"
-                    ? `${row.daysOverdue} day${row.daysOverdue !== 1 ? "s" : ""} overdue`
-                    : row.daysUntilDue === 0
-                      ? "Due today"
-                      : `Due in ${row.daysUntilDue} day${row.daysUntilDue !== 1 ? "s" : ""}`}
-                </div>
-                <div>
-                  <StatusBadge
-                    status={row.status === "overdue" ? "overdue" : "due-soon"}
-                  />
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </Card>
+      <ReminderWidget reminders={reminders} />
     </div>
   );
 }
@@ -1357,9 +1611,6 @@ function TenantsPage({
             >
               {filteredTenants.map((t) => {
                 const room = rooms.find((r) => r.id === t.roomId);
-                const building = room
-                  ? buildings.find((b) => b.id === room.buildingId)
-                  : null;
                 return (
                   <div
                     key={t.id}
@@ -1433,10 +1684,7 @@ function TenantsPage({
                         marginBottom: 4,
                       }}
                     >
-                      {building ? `${building.name} · ` : ""}
-                      {room
-                        ? `${floorLabel(room.floor)} · ${room.number}`
-                        : "—"}
+                      {roomLocation(room, buildings)}
                     </div>
                     <div
                       className="mono"
@@ -1551,9 +1799,7 @@ function TenantsPage({
                         }}
                       >
                         {t.phone ? `${t.phone} · ` : ""}
-                        {room
-                          ? `${floorLabel(room.floor)} · ${room.number}`
-                          : "—"}
+                        {roomLocation(room, buildings)}
                       </div>
                     </div>
                     <div
@@ -1841,6 +2087,120 @@ function TenantsPage({
 
 // ─── Page: Payments ───────────────────────────────────────────────────────────
 
+function PaymentList({
+  payments,
+  tenants,
+  rooms,
+  onSelect,
+}: {
+  payments: Payment[];
+  tenants: Tenant[];
+  rooms: Room[];
+  onSelect: (payment: Payment) => void;
+}) {
+  return (
+    <div className="payment-table-wrap">
+      <div className="tbl-payments payment-table-header">
+        <div>Tenant</div>
+        <div className="payment-col-months">Months</div>
+        <div className="payment-col-tag">Tag</div>
+        <div>Amount</div>
+      </div>
+      {payments.map((payment, index) => {
+        const tenant = tenants.find((item) => item.id === payment.tenantId);
+        const room = tenant
+          ? rooms.find((item) => item.id === tenant.roomId)
+          : undefined;
+        return (
+          <div
+            key={payment.id}
+            className="table-row tbl-payments payment-row"
+            onClick={() => onSelect(payment)}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onSelect(payment);
+              }
+            }}
+            style={{
+              padding: "13px 20px",
+              borderBottom:
+                index < payments.length - 1
+                  ? "1px solid var(--border)"
+                  : "none",
+            }}
+          >
+            <div>
+              <div className="payment-tenant-name">{tenant?.name ?? "—"}</div>
+              <div className="payment-tenant-meta">
+                {room ? `${roomLocation(room)} · ` : ""}
+                {payment.monthsCovered} mo · {tagLabel(payment.daysOffset)}
+              </div>
+            </div>
+            <div className="payment-col-months mono payment-muted-cell">
+              {payment.monthsCovered} mo
+            </div>
+            <div className="payment-col-tag">
+              <PaymentTagBadge daysOffset={payment.daysOffset} />
+            </div>
+            <div className="mono payment-amount">{fmtRWF(payment.amount)}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function PaymentGrid({
+  payments,
+  tenants,
+  rooms,
+  onSelect,
+}: {
+  payments: Payment[];
+  tenants: Tenant[];
+  rooms: Room[];
+  onSelect: (payment: Payment) => void;
+}) {
+  return (
+    <div className="payment-card-grid">
+      {payments.map((payment) => {
+        const tenant = tenants.find((item) => item.id === payment.tenantId);
+        const room = tenant
+          ? rooms.find((item) => item.id === tenant.roomId)
+          : undefined;
+        return (
+          <button
+            type="button"
+            key={payment.id}
+            className="payment-card"
+            onClick={() => onSelect(payment)}
+            aria-label={`View payment details for ${tenant?.name ?? "unknown tenant"}`}
+          >
+            <div className="payment-card-topline">
+              <span className="payment-card-icon">
+                <Wallet size={16} />
+              </span>
+              <PaymentTagBadge daysOffset={payment.daysOffset} />
+            </div>
+            <strong>{tenant?.name ?? "Unknown tenant"}</strong>
+            <span className="payment-card-location">{roomLocation(room)}</span>
+            <span className="mono payment-card-amount">
+              {fmtRWF(payment.amount)}
+            </span>
+            <span className="payment-card-meta">
+              {payment.monthsCovered} month
+              {payment.monthsCovered !== 1 ? "s" : ""} · {payment.recordedDate}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function PaymentsPage({
   rooms,
   tenants,
@@ -1858,6 +2218,10 @@ function PaymentsPage({
   const [periodStart, setPeriodStart] = useState("2026-07");
   const [showDropdown, setShowDropdown] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [paymentViewMode, setPaymentViewMode] = useState<"list" | "grid">(
+    "list",
+  );
+  const [selectedPayment, setSelectedPayment] = useState<Payment | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
   const matchedTenants =
@@ -2034,8 +2398,7 @@ function PaymentsPage({
                                 marginTop: 2,
                               }}
                             >
-                              {floorLabel(r.floor)} · {r.number} ·{" "}
-                              {fmtRWF(t.monthlyRent)}/mo
+                              {roomLocation(r)} · {fmtRWF(t.monthlyRent)}/mo
                             </div>
                           )}
                         </button>
@@ -2225,127 +2588,123 @@ function PaymentsPage({
             >
               Recent Payments
             </div>
-            <div
-              className="mono"
-              style={{ fontSize: 12, color: "var(--text-muted)" }}
-            >
-              {payments.length} total
+            <div className="payment-header-actions">
+              <div
+                className="mono"
+                style={{ fontSize: 12, color: "var(--text-muted)" }}
+              >
+                {payments.length} total
+              </div>
+              <div
+                className="payment-view-toggle"
+                role="group"
+                aria-label="Choose payment view"
+              >
+                <button
+                  type="button"
+                  className={paymentViewMode === "list" ? "is-active" : ""}
+                  onClick={() => setPaymentViewMode("list")}
+                  aria-pressed={paymentViewMode === "list"}
+                  title="List view"
+                >
+                  <List size={15} /> List
+                </button>
+                <button
+                  type="button"
+                  className={paymentViewMode === "grid" ? "is-active" : ""}
+                  onClick={() => setPaymentViewMode("grid")}
+                  aria-pressed={paymentViewMode === "grid"}
+                  title="Grid view"
+                >
+                  <LayoutGrid size={15} /> Grid
+                </button>
+              </div>
             </div>
           </div>
-          <div
-            className="tbl-payments"
-            style={{
-              padding: "10px 20px",
-              backgroundColor: "var(--surface2)",
-              borderBottom: "1px solid var(--border)",
-            }}
-          >
-            <div
-              style={{
-                fontSize: 11,
-                fontWeight: 600,
-                letterSpacing: "0.06em",
-                textTransform: "uppercase",
-                color: "var(--text-muted)",
-              }}
-            >
-              Tenant
-            </div>
-            <div
-              className="payment-col-months"
-              style={{
-                fontSize: 11,
-                fontWeight: 600,
-                letterSpacing: "0.06em",
-                textTransform: "uppercase",
-                color: "var(--text-muted)",
-              }}
-            >
-              Months
-            </div>
-            <div
-              className="payment-col-tag"
-              style={{
-                fontSize: 11,
-                fontWeight: 600,
-                letterSpacing: "0.06em",
-                textTransform: "uppercase",
-                color: "var(--text-muted)",
-              }}
-            >
-              Tag
-            </div>
-            <div
-              style={{
-                fontSize: 11,
-                fontWeight: 600,
-                letterSpacing: "0.06em",
-                textTransform: "uppercase",
-                color: "var(--text-muted)",
-              }}
-            >
-              Amount
-            </div>
-          </div>
-          {recentPayments.map((p, i) => {
-            const t = tenants.find((t) => t.id === p.tenantId);
-            const r = t ? rooms.find((rm) => rm.id === t.roomId) : null;
+          {recentPayments.length === 0 ? (
+            <div className="payment-empty">No payments recorded yet.</div>
+          ) : paymentViewMode === "list" ? (
+            <PaymentList
+              payments={recentPayments}
+              tenants={tenants}
+              rooms={rooms}
+              onSelect={setSelectedPayment}
+            />
+          ) : (
+            <PaymentGrid
+              payments={recentPayments}
+              tenants={tenants}
+              rooms={rooms}
+              onSelect={setSelectedPayment}
+            />
+          )}
+        </Card>
+
+        {selectedPayment &&
+          (() => {
+            const paymentTenant = tenants.find(
+              (tenant) => tenant.id === selectedPayment.tenantId,
+            );
+            const paymentRoom = paymentTenant
+              ? rooms.find((room) => room.id === paymentTenant.roomId)
+              : undefined;
             return (
               <div
-                key={p.id}
-                className="table-row tbl-payments"
-                style={{
-                  padding: "13px 20px",
-                  borderBottom:
-                    i < recentPayments.length - 1
-                      ? "1px solid var(--border)"
-                      : "none",
-                }}
+                className="payment-detail-backdrop"
+                onClick={() => setSelectedPayment(null)}
               >
-                <div>
-                  <div
-                    style={{
-                      fontWeight: 500,
-                      color: "var(--text)",
-                      fontSize: 13,
-                    }}
-                  >
-                    {t?.name ?? "—"}
-                  </div>
-                  <div
-                    style={{
-                      fontSize: 11,
-                      color: "var(--text-muted)",
-                      marginTop: 1,
-                    }}
-                  >
-                    {r ? `${floorLabel(r.floor)} · ${r.number} · ` : ""}
-                    {p.monthsCovered} mo · {tagLabel(p.daysOffset)}
-                  </div>
-                </div>
-                <div
-                  className="payment-col-months mono"
-                  style={{ fontSize: 13, color: "var(--text-muted)" }}
+                <Card
+                  className="payment-detail-panel"
+                  onClick={(event) => event.stopPropagation()}
                 >
-                  {p.monthsCovered} mo
-                </div>
-                <div className="payment-col-tag">
-                  <PaymentTagBadge daysOffset={p.daysOffset} />
-                </div>
-                <div
-                  className="mono"
-                  style={{
-                    fontSize: 13,
-                    fontWeight: 500,
-                    color: "var(--text)",
-                  }}
-                >
-                  {fmtRWF(p.amount)}
-                </div>
+                  <div className="payment-detail-header">
+                    <div>
+                      <span className="payment-detail-eyebrow">
+                        Payment information
+                      </span>
+                      <h2>{paymentTenant?.name ?? "Unknown tenant"}</h2>
+                    </div>
+                    <button
+                      type="button"
+                      className="payment-detail-close"
+                      onClick={() => setSelectedPayment(null)}
+                      aria-label="Close payment details"
+                    >
+                      <X size={17} />
+                    </button>
+                  </div>
+                  <div className="payment-detail-status">
+                    <PaymentTagBadge daysOffset={selectedPayment.daysOffset} />
+                    <strong className="mono">
+                      {fmtRWF(selectedPayment.amount)}
+                    </strong>
+                  </div>
+                  <div className="payment-detail-grid">
+                    <div>
+                      <span>Building and room</span>
+                      <strong>{roomLocation(paymentRoom)}</strong>
+                    </div>
+                    <div>
+                      <span>Payment date</span>
+                      <strong>{selectedPayment.recordedDate}</strong>
+                    </div>
+                    <div>
+                      <span>Period start</span>
+                      <strong>{selectedPayment.periodStart}</strong>
+                    </div>
+                    <div>
+                      <span>Months covered</span>
+                      <strong>{selectedPayment.monthsCovered}</strong>
+                    </div>
+                    <div>
+                      <span>Timing</span>
+                      <strong>{tagLabel(selectedPayment.daysOffset)}</strong>
+                    </div>
+                  </div>
+                </Card>
               </div>
             );
-          })}
-        </Card>
+          })()}
       </div>
     </div>
   );
@@ -2380,7 +2739,7 @@ function ReportsPage({
       const t = tenants.find((tt) => tt.id === p.tenantId);
       const r = t ? rooms.find((rr) => rr.id === t.roomId) : null;
       const tenantName = t?.name ?? "—";
-      const roomLabel = r ? `${floorLabel(r.floor)} · ${r.number}` : "—";
+      const roomLabel = roomLocation(r);
       const paymentDate = p.recordedDate;
       const monthsCovered = p.monthsCovered;
       const amount = p.amount;
@@ -2780,7 +3139,7 @@ function ReportsPage({
                         {t?.name ?? "—"}
                       </div>
                       <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
-                        {r ? `${floorLabel(r.floor)} · ${r.number}` : "—"}
+                        {roomLocation(r)}
                       </div>
                       <div
                         className="mono"
@@ -2840,6 +3199,79 @@ function ReportsPage({
 
 // ─── Page: Buildings ──────────────────────────────────────────────────────────
 
+function RoomList({
+  rooms,
+  tenants,
+  onSelect,
+  onEdit,
+  onDelete,
+}: {
+  rooms: Room[];
+  tenants: TenantWithTin[];
+  onSelect: (roomId: string) => void;
+  onEdit: (room: Room) => void;
+  onDelete: (roomId: string) => void;
+}) {
+  return (
+    <div className="room-list" aria-label="Rooms list">
+      {rooms.map((room) => {
+        const tenant = getTenantForRoom(room.id, tenants);
+        const occupied = Boolean(tenant);
+        return (
+          <div
+            key={room.id}
+            className="room-list-row"
+            onClick={() => onSelect(room.id)}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onSelect(room.id);
+              }
+            }}
+          >
+            <div className="room-list-number mono">{room.number}</div>
+            <div className="room-list-tenant">
+              <strong>{tenant?.name ?? "No tenant assigned"}</strong>
+              <span>{fmtRWF(room.baseRent)}/mo</span>
+            </div>
+            <StatusBadge status={occupied ? "occupied" : "vacant"} />
+            <div className="room-list-actions">
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onEdit(room);
+                }}
+                title={`Edit room ${room.number}`}
+                aria-label={`Edit room ${room.number}`}
+              >
+                <Edit2 size={14} />
+              </button>
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  if (
+                    window.confirm("Are you sure you want to delete this room?")
+                  ) {
+                    onDelete(room.id);
+                  }
+                }}
+                title={`Delete room ${room.number}`}
+                aria-label={`Delete room ${room.number}`}
+              >
+                <Trash2 size={14} />
+              </button>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function BuildingsPage({
   rooms,
   tenants,
@@ -2866,6 +3298,7 @@ function BuildingsPage({
     baseRent: "",
   }));
   const [submitted, setSubmitted] = useState(false);
+  const [roomViewMode, setRoomViewMode] = useState<"grid" | "list">("grid");
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [editingRoomId, setEditingRoomId] = useState<string | null>(null);
   const [editingRoom, setEditingRoom] = useState<{
@@ -3087,6 +3520,34 @@ function BuildingsPage({
           </form>
         </Card>
 
+        <div className="room-view-toolbar" aria-label="Room view options">
+          <span>Room view</span>
+          <div
+            className="room-view-toggle"
+            role="group"
+            aria-label="Choose room view"
+          >
+            <button
+              type="button"
+              className={roomViewMode === "grid" ? "is-active" : ""}
+              onClick={() => setRoomViewMode("grid")}
+              aria-pressed={roomViewMode === "grid"}
+              title="Grid view"
+            >
+              <LayoutGrid size={16} /> Grid
+            </button>
+            <button
+              type="button"
+              className={roomViewMode === "list" ? "is-active" : ""}
+              onClick={() => setRoomViewMode("list")}
+              aria-pressed={roomViewMode === "list"}
+              title="List view"
+            >
+              <List size={16} /> List
+            </button>
+          </div>
+        </div>
+
         {/* Rooms grouped by building, then by that building's own floors */}
         {buildings.map((building) => {
           const buildingRooms = rooms.filter(
@@ -3195,166 +3656,176 @@ function BuildingsPage({
                           )}
                         </div>
                       </div>
-                      <div
-                        className="room-card-grid"
-                        style={{
-                          display: "grid",
-                          gridTemplateColumns:
-                            "repeat(auto-fill, minmax(160px, 1fr))",
-                          gap: 12,
-                        }}
-                      >
-                        {floorRooms.map((room) => {
-                          const tenant = getTenantForRoom(room.id, tenants);
-                          const occupied = Boolean(tenant);
-                          return (
-                            <div
-                              key={room.id}
-                              className="room-card"
-                              onClick={() => setSelectedRoomId(room.id)}
-                              role="button"
-                              tabIndex={0}
-                              onKeyDown={(event) => {
-                                if (
-                                  event.key === "Enter" ||
-                                  event.key === " "
-                                ) {
-                                  event.preventDefault();
-                                  setSelectedRoomId(room.id);
-                                }
-                              }}
-                              style={{
-                                backgroundColor: occupied
-                                  ? "var(--surface)"
-                                  : "var(--status-paid-bg)",
-                                border: occupied
-                                  ? undefined
-                                  : "1.5px solid var(--status-paid)",
-                                cursor: "pointer",
-                                padding: 12,
-                                borderRadius: "var(--radius)",
-                              }}
-                            >
+                      {roomViewMode === "list" ? (
+                        <RoomList
+                          rooms={floorRooms}
+                          tenants={tenants}
+                          onSelect={setSelectedRoomId}
+                          onEdit={startEditRoom}
+                          onDelete={onDeleteRoom}
+                        />
+                      ) : (
+                        <div
+                          className="room-card-grid"
+                          style={{
+                            display: "grid",
+                            gridTemplateColumns:
+                              "repeat(auto-fill, minmax(160px, 1fr))",
+                            gap: 12,
+                          }}
+                        >
+                          {floorRooms.map((room) => {
+                            const tenant = getTenantForRoom(room.id, tenants);
+                            const occupied = Boolean(tenant);
+                            return (
                               <div
+                                key={room.id}
+                                className="room-card"
+                                onClick={() => setSelectedRoomId(room.id)}
+                                role="button"
+                                tabIndex={0}
+                                onKeyDown={(event) => {
+                                  if (
+                                    event.key === "Enter" ||
+                                    event.key === " "
+                                  ) {
+                                    event.preventDefault();
+                                    setSelectedRoomId(room.id);
+                                  }
+                                }}
                                 style={{
-                                  display: "flex",
-                                  justifyContent: "space-between",
-                                  alignItems: "flex-start",
-                                  marginBottom: 10,
+                                  backgroundColor: occupied
+                                    ? "var(--surface)"
+                                    : "var(--status-paid-bg)",
+                                  border: occupied
+                                    ? undefined
+                                    : "1.5px solid var(--status-paid)",
+                                  cursor: "pointer",
+                                  padding: 12,
+                                  borderRadius: "var(--radius)",
                                 }}
                               >
                                 <div
-                                  className="mono"
-                                  style={{
-                                    fontWeight: 600,
-                                    fontSize: 14,
-                                    color: "var(--text)",
-                                  }}
-                                >
-                                  {room.number}
-                                </div>
-                                <div
                                   style={{
                                     display: "flex",
-                                    gap: 8,
-                                    alignItems: "center",
+                                    justifyContent: "space-between",
+                                    alignItems: "flex-start",
+                                    marginBottom: 10,
                                   }}
                                 >
-                                  <div style={{ display: "flex", gap: 4 }}>
-                                    <button
-                                      onClick={(event) => {
-                                        event.stopPropagation();
-                                        startEditRoom(room);
-                                      }}
-                                      title="Edit room"
-                                      style={{
-                                        background: "transparent",
-                                        border: "none",
-                                        cursor: "pointer",
-                                        color: "var(--text-muted)",
-                                      }}
-                                    >
-                                      <Edit2 size={14} />
-                                    </button>
-                                    <button
-                                      onClick={(event) => {
-                                        event.stopPropagation();
-                                        if (
-                                          window.confirm(
-                                            "Are you sure you want to delete this room?",
-                                          )
-                                        ) {
-                                          onDeleteRoom(room.id);
-                                        }
-                                      }}
-                                      title="Delete room"
-                                      style={{
-                                        background: "transparent",
-                                        border: "none",
-                                        cursor: "pointer",
-                                        color: "var(--text-muted)",
-                                      }}
-                                    >
-                                      <Trash2 size={14} />
-                                    </button>
-                                  </div>
                                   <div
+                                    className="mono"
                                     style={{
-                                      width: 8,
-                                      height: 8,
-                                      borderRadius: "50%",
-                                      backgroundColor: occupied
-                                        ? "var(--text-muted)"
-                                        : "var(--status-paid)",
-                                      marginTop: 2,
-                                      boxShadow: occupied
-                                        ? "none"
-                                        : "0 0 0 3px var(--status-paid-bg)",
-                                    }}
-                                  />
-                                </div>
-                              </div>
-                              <div style={{ marginTop: 4 }}>
-                                <div style={{ marginBottom: 6 }}>
-                                  <StatusBadge
-                                    status={occupied ? "occupied" : "vacant"}
-                                  />
-                                </div>
-                                {occupied ? (
-                                  <div
-                                    style={{
-                                      fontSize: 13,
+                                      fontWeight: 600,
+                                      fontSize: 14,
                                       color: "var(--text)",
-                                      fontWeight: 500,
                                     }}
                                   >
-                                    {tenant?.name}
+                                    {room.number}
                                   </div>
-                                ) : (
                                   <div
+                                    style={{
+                                      display: "flex",
+                                      gap: 8,
+                                      alignItems: "center",
+                                    }}
+                                  >
+                                    <div style={{ display: "flex", gap: 4 }}>
+                                      <button
+                                        onClick={(event) => {
+                                          event.stopPropagation();
+                                          startEditRoom(room);
+                                        }}
+                                        title="Edit room"
+                                        style={{
+                                          background: "transparent",
+                                          border: "none",
+                                          cursor: "pointer",
+                                          color: "var(--text-muted)",
+                                        }}
+                                      >
+                                        <Edit2 size={14} />
+                                      </button>
+                                      <button
+                                        onClick={(event) => {
+                                          event.stopPropagation();
+                                          if (
+                                            window.confirm(
+                                              "Are you sure you want to delete this room?",
+                                            )
+                                          ) {
+                                            onDeleteRoom(room.id);
+                                          }
+                                        }}
+                                        title="Delete room"
+                                        style={{
+                                          background: "transparent",
+                                          border: "none",
+                                          cursor: "pointer",
+                                          color: "var(--text-muted)",
+                                        }}
+                                      >
+                                        <Trash2 size={14} />
+                                      </button>
+                                    </div>
+                                    <div
+                                      style={{
+                                        width: 8,
+                                        height: 8,
+                                        borderRadius: "50%",
+                                        backgroundColor: occupied
+                                          ? "var(--text-muted)"
+                                          : "var(--status-paid)",
+                                        marginTop: 2,
+                                        boxShadow: occupied
+                                          ? "none"
+                                          : "0 0 0 3px var(--status-paid-bg)",
+                                      }}
+                                    />
+                                  </div>
+                                </div>
+                                <div style={{ marginTop: 4 }}>
+                                  <div style={{ marginBottom: 6 }}>
+                                    <StatusBadge
+                                      status={occupied ? "occupied" : "vacant"}
+                                    />
+                                  </div>
+                                  {occupied ? (
+                                    <div
+                                      style={{
+                                        fontSize: 13,
+                                        color: "var(--text)",
+                                        fontWeight: 500,
+                                      }}
+                                    >
+                                      {tenant?.name}
+                                    </div>
+                                  ) : (
+                                    <div
+                                      style={{
+                                        fontSize: 12,
+                                        color: "var(--text-muted)",
+                                      }}
+                                    >
+                                      No tenant assigned
+                                    </div>
+                                  )}
+                                  <div
+                                    className="mono"
                                     style={{
                                       fontSize: 12,
                                       color: "var(--text-muted)",
+                                      marginTop: 4,
                                     }}
                                   >
-                                    No tenant assigned
+                                    {fmtRWF(room.baseRent)}/mo
                                   </div>
-                                )}
-                                <div
-                                  className="mono"
-                                  style={{
-                                    fontSize: 12,
-                                    color: "var(--text-muted)",
-                                    marginTop: 4,
-                                  }}
-                                >
-                                  {fmtRWF(room.baseRent)}/mo
                                 </div>
                               </div>
-                            </div>
-                          );
-                        })}
-                      </div>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
                   );
                 })
@@ -3376,45 +3847,55 @@ function BuildingsPage({
             >
               Unassigned Rooms
             </div>
-            <div
-              className="room-card-grid"
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))",
-                gap: 12,
-              }}
-            >
-              {orphanRooms.map((room) => {
-                const tenant = getTenantForRoom(room.id, tenants);
-                const occupied = Boolean(tenant);
-                return (
-                  <div
-                    key={room.id}
-                    className="room-card"
-                    style={{
-                      padding: 12,
-                      borderRadius: "var(--radius)",
-                      backgroundColor: occupied
-                        ? "var(--surface)"
-                        : "var(--status-paid-bg)",
-                    }}
-                  >
+            {roomViewMode === "list" ? (
+              <RoomList
+                rooms={orphanRooms}
+                tenants={tenants}
+                onSelect={setSelectedRoomId}
+                onEdit={startEditRoom}
+                onDelete={onDeleteRoom}
+              />
+            ) : (
+              <div
+                className="room-card-grid"
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))",
+                  gap: 12,
+                }}
+              >
+                {orphanRooms.map((room) => {
+                  const tenant = getTenantForRoom(room.id, tenants);
+                  const occupied = Boolean(tenant);
+                  return (
                     <div
-                      className="mono"
+                      key={room.id}
+                      className="room-card"
                       style={{
-                        fontWeight: 600,
-                        fontSize: 14,
-                        color: "var(--text)",
-                        marginBottom: 6,
+                        padding: 12,
+                        borderRadius: "var(--radius)",
+                        backgroundColor: occupied
+                          ? "var(--surface)"
+                          : "var(--status-paid-bg)",
                       }}
                     >
-                      {floorLabel(room.floor)} · {room.number}
+                      <div
+                        className="mono"
+                        style={{
+                          fontWeight: 600,
+                          fontSize: 14,
+                          color: "var(--text)",
+                          marginBottom: 6,
+                        }}
+                      >
+                        {floorLabel(room.floor)} · {room.number}
+                      </div>
+                      <StatusBadge status={occupied ? "occupied" : "vacant"} />
                     </div>
-                    <StatusBadge status={occupied ? "occupied" : "vacant"} />
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -3681,7 +4162,8 @@ type Page =
   | "payments"
   | "reports"
   | "buildings"
-  | "settings";
+  | "settings"
+  | "notifications";
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isSignedIn, isLoaded } = useAuth();
@@ -3716,6 +4198,22 @@ function Sidebar({
   setCollapsed: (v: boolean | ((v: boolean) => boolean)) => void;
   isMobileView: boolean;
 }) {
+  const navigate = useNavigate();
+
+  function handleNavigate(nextPage: Page) {
+    setPage(nextPage);
+    const routes: Record<Page, string> = {
+      dashboard: "/dashboard",
+      tenants: "/tenants",
+      payments: "/payments",
+      reports: "/reports",
+      buildings: "/buildings",
+      settings: "/settings",
+      notifications: "/notifications",
+    };
+    navigate(routes[nextPage]);
+  }
+
   return (
     <>
       {isMobileView && !collapsed ? (
@@ -3845,7 +4343,7 @@ function Sidebar({
               return (
                 <button
                   key={item.id}
-                  onClick={() => setPage(item.id)}
+                  onClick={() => handleNavigate(item.id)}
                   style={{
                     display: "flex",
                     alignItems: "center",
@@ -4079,13 +4577,13 @@ function SettingsPage() {
   }
 
   return (
-    <div>
+    <div className="settings-page">
       <SectionHeader
         title="Settings"
         subtitle="Manage buildings, floors, and your active workspace"
       />
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
+      <div className="settings-grid">
         <Card style={{ padding: 20 }}>
           <div
             style={{
@@ -4396,6 +4894,7 @@ function SettingsPage() {
 // ─── App Shell ────────────────────────────────────────────────────────────────
 
 export default function App() {
+  const location = useLocation();
   const [page, setPage] = useState<Page>("dashboard");
   const [darkMode, setDarkMode] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
@@ -4415,6 +4914,19 @@ export default function App() {
   useEffect(() => {
     document.documentElement.classList.toggle("dark", darkMode);
   }, [darkMode]);
+
+  useEffect(() => {
+    const routeToPage: Record<string, Page> = {
+      "/dashboard": "dashboard",
+      "/tenants": "tenants",
+      "/payments": "payments",
+      "/reports": "reports",
+      "/buildings": "buildings",
+      "/settings": "settings",
+      "/notifications": "notifications",
+    };
+    setPage(routeToPage[location.pathname] ?? "dashboard");
+  }, [location.pathname]);
 
   useEffect(() => {
     function handleResize() {
@@ -4570,7 +5082,11 @@ export default function App() {
     }
   }
 
-  function DashboardShell() {
+  function DashboardShell({
+    notifications = false,
+  }: {
+    notifications?: boolean;
+  }) {
     return (
       <div
         style={{
@@ -4641,47 +5157,58 @@ export default function App() {
             <div style={{ color: "var(--text-muted)" }}>Loading data…</div>
           ) : (
             <>
-              {page === "dashboard" && (
+              {page === "dashboard" && !notifications && (
                 <DashboardPage
                   rooms={rooms}
                   tenants={tenants}
                   payments={payments}
                 />
               )}
-              {page === "tenants" && (
-                <TenantsPage
-                  rooms={rooms}
-                  tenants={tenants}
-                  onAddTenant={handleAddTenant}
-                  onUpdateTenant={handleUpdateTenant}
-                  onDeleteTenant={handleDeleteTenant}
-                />
-              )}
-              {page === "payments" && (
-                <PaymentsPage
-                  rooms={rooms}
-                  tenants={tenants}
-                  payments={payments}
-                  onAddPayment={handleAddPayment}
-                />
-              )}
-              {page === "reports" && (
-                <ReportsPage
+              {notifications && (
+                <NotificationsPage
                   rooms={rooms}
                   tenants={tenants}
                   payments={payments}
                 />
               )}
-              {page === "buildings" && (
-                <BuildingsPage
-                  rooms={rooms}
-                  tenants={tenants}
-                  onAddRoom={handleAddRoom}
-                  onUpdateRoom={handleUpdateRoom}
-                  onDeleteRoom={handleDeleteRoom}
-                />
+              {!notifications && (
+                <>
+                  {page === "tenants" && (
+                    <TenantsPage
+                      rooms={rooms}
+                      tenants={tenants}
+                      onAddTenant={handleAddTenant}
+                      onUpdateTenant={handleUpdateTenant}
+                      onDeleteTenant={handleDeleteTenant}
+                    />
+                  )}
+                  {page === "payments" && (
+                    <PaymentsPage
+                      rooms={rooms}
+                      tenants={tenants}
+                      payments={payments}
+                      onAddPayment={handleAddPayment}
+                    />
+                  )}
+                  {page === "reports" && (
+                    <ReportsPage
+                      rooms={rooms}
+                      tenants={tenants}
+                      payments={payments}
+                    />
+                  )}
+                  {page === "buildings" && (
+                    <BuildingsPage
+                      rooms={rooms}
+                      tenants={tenants}
+                      onAddRoom={handleAddRoom}
+                      onUpdateRoom={handleUpdateRoom}
+                      onDeleteRoom={handleDeleteRoom}
+                    />
+                  )}
+                  {page === "settings" && <SettingsPage />}
+                </>
               )}
-              {page === "settings" && <SettingsPage />}
             </>
           )}
         </main>
@@ -4786,7 +5313,7 @@ export default function App() {
           path="/settings"
           element={
             <ProtectedRoute>
-              <SettingsPage />
+              <DashboardShell />
             </ProtectedRoute>
           }
         />
@@ -4795,6 +5322,46 @@ export default function App() {
           element={
             <ProtectedRoute>
               <DashboardShell />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/tenants"
+          element={
+            <ProtectedRoute>
+              <DashboardShell />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/payments"
+          element={
+            <ProtectedRoute>
+              <DashboardShell />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/reports"
+          element={
+            <ProtectedRoute>
+              <DashboardShell />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/buildings"
+          element={
+            <ProtectedRoute>
+              <DashboardShell />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/notifications"
+          element={
+            <ProtectedRoute>
+              <DashboardShell notifications />
             </ProtectedRoute>
           }
         />

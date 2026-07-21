@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useUser, useClerk } from "@clerk/clerk-react";
 import { useNavigate } from "react-router-dom";
-import { Settings, LogOut } from "lucide-react";
+import { LogOut } from "lucide-react";
 
 export default function UserMenu({
   collapsed = false,
@@ -115,28 +115,6 @@ export default function UserMenu({
             overflow: "hidden",
           }}
         >
-          <button
-            onClick={() => {
-              setOpen(false);
-              navigate("/settings");
-            }}
-            style={{
-              width: "100%",
-              textAlign: "left",
-              padding: "10px 14px",
-              background: "transparent",
-              border: "none",
-              cursor: "pointer",
-              fontSize: 14,
-              color: "var(--text)",
-              display: "flex",
-              alignItems: "center",
-              gap: 10,
-            }}
-          >
-            <Settings size={16} />
-            Settings
-          </button>
           <button
             onClick={handleLogout}
             style={{

@@ -104,7 +104,7 @@ export async function fetchTenants() {
     phone: row.phone ?? undefined,
     tinNumber: row.tin_number ?? undefined,
     roomId: row.room_id,
-    monthlyRent: row.monthly_rent,
+    monthlyRent: Number(row.monthly_rent ?? row.monthlyRent ?? 0),
     dueDay: row.due_day,
     startDate: row.start_date,
     roomNumber: row.rooms?.number ?? "",
@@ -168,7 +168,16 @@ export async function addTenant(
     .single();
 
   if (error) throw error;
-  return data;
+  return {
+    id: data.id,
+    name: data.name,
+    phone: data.phone ?? undefined,
+    tinNumber: data.tin_number ?? undefined,
+    roomId: data.room_id,
+    monthlyRent: Number(data.monthly_rent ?? data.monthlyRent ?? 0),
+    dueDay: data.due_day,
+    startDate: data.start_date,
+  } as Tenant;
 }
 
 export async function updateTenant(
@@ -196,7 +205,7 @@ export async function updateTenant(
     phone: data.phone ?? undefined,
     tinNumber: data.tin_number ?? undefined,
     roomId: data.room_id,
-    monthlyRent: data.monthly_rent,
+    monthlyRent: Number(data.monthly_rent ?? data.monthlyRent ?? 0),
     dueDay: data.due_day,
     startDate: data.start_date,
   } as Tenant;
