@@ -1,6 +1,13 @@
 import { useState, useEffect, useMemo, useRef } from "react";
+import html2canvas from "html2canvas";
 import { SignIn, SignUp, useAuth } from "@clerk/clerk-react";
-import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import {
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+} from "react-router-dom";
 import {
   LayoutDashboard,
   Users,
@@ -9,6 +16,8 @@ import {
   Building2,
   Menu,
   X,
+  PanelLeftClose,
+  PanelLeftOpen,
   Sun,
   Moon,
   Plus,
@@ -23,11 +32,11 @@ import {
   CalendarDays,
   Search,
   SlidersHorizontal,
+  Share,
 } from "lucide-react";
 import WelcomePage from "./WelcomePage";
 import UserMenu from "./UserMenu";
-import { FLOORS, FLOOR_LABELS } from "./data";
-import type { Room, Tenant, Payment, Floor, PaymentTag } from "./data";
+import type { Room, Tenant, Payment, PaymentTag } from "./data";
 
 type TenantWithTin = Tenant & { tinNumber?: string };
 import {
@@ -35,6 +44,9 @@ import {
   addBuilding,
   updateBuilding,
   deleteBuilding,
+  fetchFloors,
+  addFloor,
+  deleteFloor,
   fetchRooms,
   fetchTenants,
   fetchPayments,
@@ -52,6 +64,8 @@ import {
 } from "./lib/exportReports";
 
 // ─── Utilities ───────────────────────────────────────────────────────────────
+
+const DEFAULT_FLOORS = ["Ground", "L1", "L2", "L3"];
 
 function fmtRWF(n: number) {
   return `RWF ${n.toLocaleString("en-US")}`;
@@ -81,7 +95,7 @@ function initials(name: string) {
 }
 
 function roomLocation(
-  room: Room | undefined,
+  room: Room | null | undefined,
   buildings?: Array<{ id: string; name: string }>,
 ) {
   if (!room) return "—";
@@ -90,6 +104,23 @@ function roomLocation(
     buildings?.find((building) => building.id === room.buildingId)?.name;
   const floorAndRoom = `${floorLabel(room.floor)} · ${room.number}`;
   return buildingName ? `${buildingName} · ${floorAndRoom}` : floorAndRoom;
+}
+
+function roomLocationCompact(
+  room: Room | null | undefined,
+  buildings?: Array<{ id: string; name: string }>,
+) {
+  if (!room) return "—";
+  const buildingName =
+    room.buildingName ??
+    buildings?.find((building) => building.id === room.buildingId)?.name;
+  const floorAndRoom = `${floorLabel(room.floor)} · ${room.number}`;
+  if (!buildingName) return floorAndRoom;
+
+  const compactName = buildingName.trim().replace(/\s+/g, " ");
+  const displayName =
+    compactName.length > 18 ? `${compactName.slice(0, 16)}…` : compactName;
+  return `${displayName} · ${floorAndRoom}`;
 }
 
 function paidThisMonth(tenantId: string, payments: Payment[]) {
@@ -156,30 +187,7 @@ function getTenantForRoom(roomId: string, tenants: Tenant[]) {
 }
 
 function floorLabel(floor: string): string {
-  return (FLOOR_LABELS as Record<string, string>)[floor] ?? floor;
-}
-
-// ─── Per-building custom floors (persisted via localStorage) ────────────────
-// Your current data model has one global FLOORS list. Buildings don't all
-// have the same floors, so each building can now define its own floor list,
-// managed from Settings > Configure Floors, stored per building id.
-function getBuildingFloors(buildingId: string): string[] {
-  if (!buildingId || typeof window === "undefined") return [...FLOORS];
-  try {
-    const raw = localStorage.getItem(`rm:floors:${buildingId}`);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-    }
-  } catch {
-    // fall through to default
-  }
-  return [...FLOORS];
-}
-
-function setBuildingFloorsStorage(buildingId: string, floors: string[]) {
-  if (typeof window === "undefined" || !buildingId) return;
-  localStorage.setItem(`rm:floors:${buildingId}`, JSON.stringify(floors));
+  return floor;
 }
 
 // ─── Global responsive / visual polish styles ────────────────────────────────
@@ -1896,7 +1904,7 @@ function TenantsPage({
               <option value="">Select a room…</option>
               {vacantRooms.map((r) => (
                 <option key={r.id} value={r.id}>
-                  {floorLabel(r.floor)} · {r.number} — {fmtRWF(r.baseRent)}/mo
+                  {roomLocationCompact(r, buildings)} — {fmtRWF(r.baseRent)}/mo
                 </option>
               ))}
             </Select>
@@ -2018,7 +2026,8 @@ function TenantsPage({
               >
                 {editableRooms.map((r) => (
                   <option key={r.id} value={r.id}>
-                    {floorLabel(r.floor)} · {r.number} — {fmtRWF(r.baseRent)}/mo
+                    {roomLocationCompact(r, buildings)} — {fmtRWF(r.baseRent)}
+                    /mo
                   </option>
                 ))}
               </Select>
@@ -2222,6 +2231,8 @@ function PaymentsPage({
     "list",
   );
   const [selectedPayment, setSelectedPayment] = useState<Payment | null>(null);
+  const [isSharing, setIsSharing] = useState(false);
+  const receiptRef = useRef<HTMLDivElement | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
   const matchedTenants =
@@ -2266,6 +2277,55 @@ function PaymentsPage({
   }
 
   const recentPayments = [...payments].reverse().slice(0, 15);
+
+  async function handleShare() {
+    if (!receiptRef.current || !selectedPayment) return;
+    setIsSharing(true);
+    try {
+      const canvas = await html2canvas(receiptRef.current, {
+        backgroundColor: null,
+        scale: 2,
+      });
+      const blob = await new Promise<Blob | null>((resolve) => {
+        canvas.toBlob((result) => resolve(result), "image/png");
+      });
+
+      if (!blob) return;
+
+      const tenant = tenants.find(
+        (item) => item.id === selectedPayment.tenantId,
+      );
+      const tenantName = tenant?.name ?? "tenant";
+      const file = new File([blob], `payment-receipt-${tenantName}.png`, {
+        type: "image/png",
+      });
+
+      if (
+        navigator.share &&
+        navigator.canShare &&
+        navigator.canShare({ files: [file] })
+      ) {
+        try {
+          await navigator.share({
+            files: [file],
+            title: "Payment Receipt",
+            text: `Payment receipt for ${tenantName}`,
+          });
+        } catch (err) {
+          console.error("Share cancelled or failed:", err);
+        }
+      } else {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `payment-receipt-${tenantName}.png`;
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+    } finally {
+      window.setTimeout(() => setIsSharing(false), 500);
+    }
+  }
 
   return (
     <div>
@@ -2664,41 +2724,176 @@ function PaymentsPage({
                       </span>
                       <h2>{paymentTenant?.name ?? "Unknown tenant"}</h2>
                     </div>
-                    <button
-                      type="button"
-                      className="payment-detail-close"
-                      onClick={() => setSelectedPayment(null)}
-                      aria-label="Close payment details"
+                    <div
+                      style={{ display: "flex", alignItems: "center", gap: 8 }}
                     >
-                      <X size={17} />
-                    </button>
+                      <button
+                        type="button"
+                        className="payment-detail-close"
+                        onClick={handleShare}
+                        aria-label="Share payment receipt"
+                        disabled={isSharing}
+                        style={{ opacity: isSharing ? 0.7 : 1 }}
+                      >
+                        {isSharing ? "Preparing..." : <Share size={16} />}
+                      </button>
+                      <button
+                        type="button"
+                        className="payment-detail-close"
+                        onClick={() => setSelectedPayment(null)}
+                        aria-label="Close payment details"
+                      >
+                        <X size={17} />
+                      </button>
+                    </div>
                   </div>
-                  <div className="payment-detail-status">
-                    <PaymentTagBadge daysOffset={selectedPayment.daysOffset} />
-                    <strong className="mono">
-                      {fmtRWF(selectedPayment.amount)}
-                    </strong>
-                  </div>
-                  <div className="payment-detail-grid">
-                    <div>
-                      <span>Building and room</span>
-                      <strong>{roomLocation(paymentRoom)}</strong>
-                    </div>
-                    <div>
-                      <span>Payment date</span>
-                      <strong>{selectedPayment.recordedDate}</strong>
-                    </div>
-                    <div>
-                      <span>Period start</span>
-                      <strong>{selectedPayment.periodStart}</strong>
-                    </div>
-                    <div>
-                      <span>Months covered</span>
-                      <strong>{selectedPayment.monthsCovered}</strong>
-                    </div>
-                    <div>
-                      <span>Timing</span>
-                      <strong>{tagLabel(selectedPayment.daysOffset)}</strong>
+                  <div ref={receiptRef} style={{ padding: 4 }}>
+                    <div
+                      style={{
+                        padding: 18,
+                        borderRadius: "var(--radius)",
+                        border: "1px solid var(--border)",
+                        backgroundColor: "var(--surface)",
+                        boxShadow: "var(--shadow)",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 12,
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          gap: 12,
+                        }}
+                      >
+                        <div>
+                          <div
+                            style={{ fontSize: 12, color: "var(--text-muted)" }}
+                          >
+                            Rent Manager
+                          </div>
+                          <div
+                            style={{ fontWeight: 700, color: "var(--text)" }}
+                          >
+                            {paymentRoom?.buildingName ?? "Building"}
+                          </div>
+                        </div>
+                        <PaymentTagBadge
+                          daysOffset={selectedPayment.daysOffset}
+                        />
+                      </div>
+
+                      <div
+                        style={{
+                          padding: "12px 14px",
+                          borderRadius: "var(--radius-sm)",
+                          backgroundColor: "var(--surface2)",
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 6,
+                        }}
+                      >
+                        <div
+                          style={{ fontSize: 12, color: "var(--text-muted)" }}
+                        >
+                          Tenant
+                        </div>
+                        <div style={{ fontWeight: 700, color: "var(--text)" }}>
+                          {paymentTenant?.name ?? "Unknown tenant"}
+                        </div>
+                        <div
+                          style={{ fontSize: 12, color: "var(--text-muted)" }}
+                        >
+                          Room: {roomLocation(paymentRoom)}
+                        </div>
+                      </div>
+
+                      <div style={{ display: "grid", gap: 8 }}>
+                        <div
+                          style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            gap: 10,
+                          }}
+                        >
+                          <div
+                            style={{ fontSize: 12, color: "var(--text-muted)" }}
+                          >
+                            Payment date
+                          </div>
+                          <div
+                            style={{ fontWeight: 600, color: "var(--text)" }}
+                          >
+                            {selectedPayment.recordedDate}
+                          </div>
+                        </div>
+                        <div
+                          style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            gap: 10,
+                          }}
+                        >
+                          <div
+                            style={{ fontSize: 12, color: "var(--text-muted)" }}
+                          >
+                            Months covered
+                          </div>
+                          <div
+                            style={{ fontWeight: 600, color: "var(--text)" }}
+                          >
+                            {selectedPayment.monthsCovered}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div
+                        style={{
+                          padding: "14px 16px",
+                          borderRadius: "var(--radius-sm)",
+                          backgroundColor: "var(--nav-active-bg)",
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 6,
+                        }}
+                      >
+                        <div
+                          style={{ fontSize: 12, color: "var(--text-muted)" }}
+                        >
+                          Amount Paid
+                        </div>
+                        <div
+                          className="mono"
+                          style={{
+                            fontSize: 28,
+                            fontWeight: 700,
+                            color: "var(--text)",
+                          }}
+                        >
+                          {fmtRWF(selectedPayment.amount)}
+                        </div>
+                      </div>
+
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                        }}
+                      >
+                        <div
+                          style={{ fontSize: 12, color: "var(--text-muted)" }}
+                        >
+                          Status
+                        </div>
+                        <div style={{ fontWeight: 600, color: "var(--text)" }}>
+                          {tagLabel(selectedPayment.daysOffset)}
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </Card>
@@ -2739,15 +2934,21 @@ function ReportsPage({
       const t = tenants.find((tt) => tt.id === p.tenantId);
       const r = t ? rooms.find((rr) => rr.id === t.roomId) : null;
       const tenantName = t?.name ?? "—";
-      const roomLabel = roomLocation(r);
-      const paymentDate = p.recordedDate;
+      const buildingName = r?.buildingName ?? "—";
+      const roomLabel = r ? `${r.floor} · ${r.number}` : "—";
+      const paymentDate = new Date(p.recordedDate).toLocaleDateString("en-US", {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+      });
       const monthsCovered = p.monthsCovered;
       const amount = p.amount;
       const status =
         p.daysOffset < 0 ? "early" : p.daysOffset === 0 ? "on-time" : "late";
       return {
-        tenantName,
+        building: buildingName,
         room: roomLabel,
+        tenantName,
         paymentDate,
         monthsCovered,
         amount,
@@ -3074,15 +3275,15 @@ function ReportsPage({
               <div
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "1fr 120px 80px 90px 110px",
+                  gridTemplateColumns: "100px 100px 1fr 110px 70px 80px 110px",
                   gap: 12,
                   padding: "10px 20px",
                   backgroundColor: "var(--surface2)",
                   borderBottom: "1px solid var(--border)",
-                  minWidth: "480px",
+                  minWidth: "680px",
                 }}
               >
-                {["Tenant", "Location", "Months", "Tag", "Amount"].map((h) => (
+                {["Building", "Room", "Tenant", "Payment Date", "Months", "Status", "Amount"].map((h) => (
                   <div
                     key={h}
                     style={{
@@ -3091,6 +3292,7 @@ function ReportsPage({
                       letterSpacing: "0.06em",
                       textTransform: "uppercase",
                       color: "var(--text-muted)",
+                      textAlign: h === "Amount" ? "right" : "left",
                     }}
                   >
                     {h}
@@ -3112,13 +3314,20 @@ function ReportsPage({
                 results.map((p, i) => {
                   const t = tenants.find((t) => t.id === p.tenantId);
                   const r = t ? rooms.find((rm) => rm.id === t.roomId) : null;
+                  const buildingName = r?.buildingName ?? "—";
+                  const roomLabel = r ? `${r.floor} · ${r.number}` : "—";
+                  const paymentDateFormatted = new Date(p.recordedDate).toLocaleDateString("en-US", {
+                    year: "numeric",
+                    month: "short",
+                    day: "numeric",
+                  });
                   return (
                     <div
                       key={p.id}
                       className="table-row"
                       style={{
                         display: "grid",
-                        gridTemplateColumns: "1fr 120px 80px 90px 110px",
+                        gridTemplateColumns: "100px 100px 1fr 110px 70px 80px 110px",
                         gap: 12,
                         padding: "13px 20px",
                         alignItems: "center",
@@ -3126,20 +3335,53 @@ function ReportsPage({
                           i < results.length - 1
                             ? "1px solid var(--border)"
                             : "none",
-                        minWidth: "480px",
+                        minWidth: "680px",
                       }}
                     >
+                      <div
+                        style={{
+                          fontSize: 13,
+                          color: "var(--text-muted)",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                        title={buildingName}
+                      >
+                        {buildingName}
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 13,
+                          color: "var(--text-muted)",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                        title={roomLabel}
+                      >
+                        {roomLabel}
+                      </div>
                       <div
                         style={{
                           fontWeight: 500,
                           color: "var(--text)",
                           fontSize: 13,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
                         }}
+                        title={t?.name ?? "—"}
                       >
                         {t?.name ?? "—"}
                       </div>
-                      <div style={{ fontSize: 13, color: "var(--text-muted)" }}>
-                        {roomLocation(r)}
+                      <div
+                        style={{
+                          fontSize: 13,
+                          color: "var(--text-muted)",
+                        }}
+                      >
+                        {paymentDateFormatted}
                       </div>
                       <div
                         className="mono"
@@ -3156,6 +3398,8 @@ function ReportsPage({
                           fontSize: 13,
                           fontWeight: 500,
                           color: "var(--text)",
+                          textAlign: "right",
+                          whiteSpace: "nowrap",
                         }}
                       >
                         {fmtRWF(p.amount)}
@@ -3289,11 +3533,14 @@ function BuildingsPage({
     [],
   );
   const [buildingId, setBuildingId] = useState("");
+  const [buildingFloors, setBuildingFloors] = useState<
+    Record<string, string[]>
+  >({});
   const [form, setForm] = useState(() => ({
     floor:
       (typeof window !== "undefined" &&
-        (localStorage.getItem("rm:activeFloor") as Floor)) ||
-      ("Ground" as Floor),
+        localStorage.getItem("rm:activeFloor")) ||
+      "Ground",
     number: "",
     baseRent: "",
   }));
@@ -3302,12 +3549,12 @@ function BuildingsPage({
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [editingRoomId, setEditingRoomId] = useState<string | null>(null);
   const [editingRoom, setEditingRoom] = useState<{
-    floor: Floor;
+    floor: string;
     number: string;
     baseRent: string;
     buildingId: string;
   }>({
-    floor: "Ground" as Floor,
+    floor: "Ground",
     number: "",
     baseRent: "",
     buildingId: "",
@@ -3349,13 +3596,52 @@ function BuildingsPage({
     };
   }, []);
 
+  async function loadBuildingFloors(buildingIdToLoad: string) {
+    if (!buildingIdToLoad) return;
+    try {
+      const floors = await fetchFloors(buildingIdToLoad);
+      const floorNames = floors.map((floor) => floor.name);
+      const normalizedFloors =
+        floorNames.length > 0 ? floorNames : DEFAULT_FLOORS;
+      setBuildingFloors((prev) => ({
+        ...prev,
+        [buildingIdToLoad]: normalizedFloors,
+      }));
+
+      if (buildingIdToLoad === buildingId) {
+        setForm((f) => ({
+          ...f,
+          floor: normalizedFloors[0] || "Ground",
+        }));
+      }
+    } catch (err) {
+      console.error("Failed to load floors", err);
+      setBuildingFloors((prev) => ({
+        ...prev,
+        [buildingIdToLoad]: DEFAULT_FLOORS,
+      }));
+    }
+  }
+
+  useEffect(() => {
+    if (!buildings.length) return;
+    for (const building of buildings) {
+      if (!buildingFloors[building.id]) {
+        void loadBuildingFloors(building.id);
+      }
+    }
+  }, [buildings]);
+
   // Whenever the selected building changes, default the Floor field to
   // that building's own first configured floor.
   useEffect(() => {
-    if (buildingId) {
-      const floors = getBuildingFloors(buildingId);
-      setForm((f) => ({ ...f, floor: (floors[0] || "Ground") as Floor }));
+    if (!buildingId) return;
+    const cached = buildingFloors[buildingId];
+    if (cached && cached.length > 0) {
+      setForm((f) => ({ ...f, floor: cached[0] || "Ground" }));
+      return;
     }
+    void loadBuildingFloors(buildingId);
   }, [buildingId]);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -3402,7 +3688,10 @@ function BuildingsPage({
     setEditingRoomId(null);
   }
 
-  const currentFloorOptions = getBuildingFloors(buildingId);
+  const currentFloorOptions =
+    (buildingFloors[buildingId] && buildingFloors[buildingId].length > 0
+      ? buildingFloors[buildingId]
+      : DEFAULT_FLOORS) ?? DEFAULT_FLOORS;
   const orphanRooms = rooms.filter(
     (r) => !buildings.some((b) => b.id === r.buildingId),
   );
@@ -3467,7 +3756,7 @@ function BuildingsPage({
               label="Floor"
               value={form.floor}
               onChange={(e) =>
-                setForm((f) => ({ ...f, floor: e.target.value as Floor }))
+                setForm((f) => ({ ...f, floor: e.target.value }))
               }
               required
             >
@@ -3553,7 +3842,8 @@ function BuildingsPage({
           const buildingRooms = rooms.filter(
             (r) => r.buildingId === building.id,
           );
-          const floorsForBuilding = getBuildingFloors(building.id);
+          const floorsForBuilding =
+            buildingFloors[building.id] ?? DEFAULT_FLOORS;
 
           return (
             <div key={building.id}>
@@ -4086,11 +4376,11 @@ function BuildingsPage({
                 value={editingRoom.buildingId}
                 onChange={(e) => {
                   const bId = e.target.value;
-                  const floors = getBuildingFloors(bId);
+                  const floors = buildingFloors[bId] ?? DEFAULT_FLOORS;
                   setEditingRoom((r) => ({
                     ...r,
                     buildingId: bId,
-                    floor: (floors[0] || "Ground") as Floor,
+                    floor: floors[0] || "Ground",
                   }));
                 }}
               >
@@ -4106,15 +4396,17 @@ function BuildingsPage({
                 onChange={(e) =>
                   setEditingRoom((r) => ({
                     ...r,
-                    floor: e.target.value as Floor,
+                    floor: e.target.value,
                   }))
                 }
               >
-                {getBuildingFloors(editingRoom.buildingId).map((f) => (
-                  <option key={f} value={f}>
-                    {floorLabel(f)}
-                  </option>
-                ))}
+                {(buildingFloors[editingRoom.buildingId] ?? DEFAULT_FLOORS).map(
+                  (f) => (
+                    <option key={f} value={f}>
+                      {floorLabel(f)}
+                    </option>
+                  ),
+                )}
               </Select>
               <Input
                 label="Room number"
@@ -4202,6 +4494,9 @@ function Sidebar({
 
   function handleNavigate(nextPage: Page) {
     setPage(nextPage);
+    if (isMobileView) {
+      setCollapsed(true);
+    }
     const routes: Record<Page, string> = {
       dashboard: "/dashboard",
       tenants: "/tenants",
@@ -4213,6 +4508,8 @@ function Sidebar({
     };
     navigate(routes[nextPage]);
   }
+
+  const showDesktopCollapseToggle = !isMobileView;
 
   return (
     <>
@@ -4251,25 +4548,31 @@ function Sidebar({
           overflow: "hidden",
         }}
       >
-        <button
-          onClick={() => setCollapsed((v) => !v)}
-          style={{
-            background: "transparent",
-            border: "none",
-            cursor: "pointer",
-            padding: "10px",
-            color: "var(--text)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            alignSelf: "flex-end",
-            marginBottom: 4,
-          }}
-          aria-label={collapsed ? "Open navigation" : "Close navigation"}
-          title={collapsed ? "Open navigation" : "Close navigation"}
-        >
-          {collapsed ? <Menu size={18} /> : <X size={18} />}
-        </button>
+        {showDesktopCollapseToggle ? (
+          <button
+            onClick={() => setCollapsed((v) => !v)}
+            style={{
+              background: "transparent",
+              border: "none",
+              cursor: "pointer",
+              padding: "10px",
+              color: "var(--text)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              alignSelf: "flex-end",
+              marginBottom: 4,
+            }}
+            aria-label={collapsed ? "Expand navigation" : "Collapse navigation"}
+            title={collapsed ? "Expand navigation" : "Collapse navigation"}
+          >
+            {collapsed ? (
+              <PanelLeftOpen size={18} />
+            ) : (
+              <PanelLeftClose size={18} />
+            )}
+          </button>
+        ) : null}
         <div
           style={{
             padding: collapsed ? "10px 12px 14px" : "22px 20px 18px",
@@ -4449,16 +4752,19 @@ function SettingsPage() {
       ? (localStorage.getItem("rm:activeBuilding") ?? "")
       : "",
   );
-  const [selectedFloor, setSelectedFloor] = useState<Floor>(
+  const [selectedFloor, setSelectedFloor] = useState<string>(
     (typeof window !== "undefined"
-      ? (localStorage.getItem("rm:activeFloor") as Floor)
+      ? localStorage.getItem("rm:activeFloor")
       : null) || "Ground",
   );
   const [saving, setSaving] = useState(false);
 
   // Per-building floor configuration
   const [floorsBuildingId, setFloorsBuildingId] = useState("");
-  const [floorList, setFloorList] = useState<string[]>([...FLOORS]);
+  const [floorList, setFloorList] = useState<string[]>([...DEFAULT_FLOORS]);
+  const [savedFloorIds, setSavedFloorIds] = useState<Record<string, string>>(
+    {},
+  );
   const [newFloorName, setNewFloorName] = useState("");
   const [floorsSaved, setFloorsSaved] = useState(false);
 
@@ -4485,9 +4791,24 @@ function SettingsPage() {
     };
   }, []);
 
+  async function loadFloors(buildingId: string) {
+    if (!buildingId) return;
+    try {
+      const rows = await fetchFloors(buildingId);
+      setFloorList(rows.map((row) => row.name));
+      setSavedFloorIds(
+        Object.fromEntries(rows.map((row) => [row.name, row.id])),
+      );
+    } catch (err) {
+      console.error("Failed to load floors", err);
+      setFloorList([...DEFAULT_FLOORS]);
+      setSavedFloorIds({});
+    }
+  }
+
   useEffect(() => {
     if (floorsBuildingId) {
-      setFloorList(getBuildingFloors(floorsBuildingId));
+      void loadFloors(floorsBuildingId);
     }
   }, [floorsBuildingId]);
 
@@ -4558,22 +4879,58 @@ function SettingsPage() {
     }
   }
 
-  function addFloor() {
+  function addFloorToLocalList() {
     const name = newFloorName.trim();
     if (!name || floorList.includes(name)) return;
     setFloorList((fl) => [...fl, name]);
     setNewFloorName("");
   }
 
-  function removeFloor(name: string) {
+  async function removeFloor(name: string) {
+    const floorId = savedFloorIds[name];
+    if (floorId) {
+      try {
+        await deleteFloor(floorId);
+      } catch (err) {
+        console.error("Failed to delete floor", err);
+      }
+    }
     setFloorList((fl) => fl.filter((f) => f !== name));
+    setSavedFloorIds((prev) => {
+      const next = { ...prev };
+      delete next[name];
+      return next;
+    });
   }
 
-  function saveFloors() {
-    if (!floorsBuildingId || floorList.length === 0) return;
-    setBuildingFloorsStorage(floorsBuildingId, floorList);
-    setFloorsSaved(true);
-    setTimeout(() => setFloorsSaved(false), 3000);
+  async function saveFloors() {
+    if (!floorsBuildingId) return;
+
+    try {
+      const existingNames = new Set(Object.keys(savedFloorIds));
+      const nextNames = new Set(floorList);
+      const additions = floorList.filter((name) => !existingNames.has(name));
+      const removals = Object.keys(savedFloorIds).filter(
+        (name) => !nextNames.has(name),
+      );
+
+      for (const name of additions) {
+        await addFloor(floorsBuildingId, name);
+      }
+
+      for (const name of removals) {
+        const floorId = savedFloorIds[name];
+        if (floorId) {
+          await deleteFloor(floorId);
+        }
+      }
+
+      await loadFloors(floorsBuildingId);
+      setFloorsSaved(true);
+      setTimeout(() => setFloorsSaved(false), 3000);
+    } catch (err) {
+      console.error("Failed to save floors", err);
+    }
   }
 
   return (
@@ -4812,7 +5169,7 @@ function SettingsPage() {
             <div style={{ display: "flex", alignItems: "flex-end", gap: 8 }}>
               <Button
                 variant="secondary"
-                onClick={addFloor}
+                onClick={addFloorToLocalList}
                 style={{ display: "flex", alignItems: "center", gap: 6 }}
               >
                 <Plus size={14} /> Add Floor
@@ -4870,13 +5227,15 @@ function SettingsPage() {
               <Select
                 label="Floor"
                 value={selectedFloor}
-                onChange={(e) => setSelectedFloor(e.target.value as Floor)}
+                onChange={(e) => setSelectedFloor(e.target.value)}
               >
-                {getBuildingFloors(selectedBuilding).map((f) => (
-                  <option key={f} value={f}>
-                    {floorLabel(f)}
-                  </option>
-                ))}
+                {(floorList.length > 0 ? floorList : DEFAULT_FLOORS).map(
+                  (f) => (
+                    <option key={f} value={f}>
+                      {floorLabel(f)}
+                    </option>
+                  ),
+                )}
               </Select>
             </div>
             <div>
@@ -5222,7 +5581,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<WelcomePage />} />
         <Route
-          path="/sign-in"
+          path="/sign-in/*"
           element={
             <div
               style={{
@@ -5266,7 +5625,7 @@ export default function App() {
           }
         />
         <Route
-          path="/sign-up"
+          path="/sign-up/*"
           element={
             <div
               style={{

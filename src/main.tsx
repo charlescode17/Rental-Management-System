@@ -1,7 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { ClerkProvider } from "@clerk/clerk-react";
-import { BrowserRouter } from "react-router-dom";
+import { BrowserRouter, useNavigate } from "react-router-dom";
 import App from "./App";
 import "./index.css";
 
@@ -11,18 +11,35 @@ const publishableKey =
   "";
 const clerkConfigured = Boolean(publishableKey && publishableKey !== "");
 
+function ClerkProviderWithRoutes({
+  publishableKey,
+  children,
+}: {
+  publishableKey: string;
+  children: React.ReactNode;
+}) {
+  const navigate = useNavigate();
+  return (
+    <ClerkProvider
+      publishableKey={publishableKey}
+      routerPush={(to) => navigate(to)}
+      routerReplace={(to) => navigate(to, { replace: true })}
+    >
+      {children}
+    </ClerkProvider>
+  );
+}
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    {clerkConfigured ? (
-      <ClerkProvider publishableKey={publishableKey}>
-        <BrowserRouter>
+    <BrowserRouter>
+      {clerkConfigured ? (
+        <ClerkProviderWithRoutes publishableKey={publishableKey}>
           <App />
-        </BrowserRouter>
-      </ClerkProvider>
-    ) : (
-      <BrowserRouter>
+        </ClerkProviderWithRoutes>
+      ) : (
         <App />
-      </BrowserRouter>
-    )}
+      )}
+    </BrowserRouter>
   </React.StrictMode>,
 );

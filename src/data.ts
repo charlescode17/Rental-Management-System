@@ -1,9 +1,8 @@
-export type Floor = "Ground" | "L1" | "L2" | "L3";
 export type PaymentTag = "early" | "on-time" | "late";
 
 export interface Room {
   id: string;
-  floor: Floor;
+  floor: string;
   number: string;
   baseRent: number;
   occupied: boolean;
@@ -32,15 +31,6 @@ export interface Payment {
   amount: number;
   daysOffset: number; // negative = early, 0 = on-time, positive = late
 }
-
-export const FLOORS: Floor[] = ["Ground", "L1", "L2", "L3"];
-
-export const FLOOR_LABELS: Record<Floor, string> = {
-  Ground: "Ground Floor",
-  L1: "First Floor (L1)",
-  L2: "Second Floor (L2)",
-  L3: "Third Floor (L3)",
-};
 
 export const INITIAL_ROOMS: Room[] = [
   {

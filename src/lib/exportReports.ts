@@ -3,8 +3,9 @@ import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
 export type ReportRow = {
-  tenantName: string;
+  building: string;
   room: string;
+  tenantName: string;
   paymentDate: string;
   monthsCovered: number;
   amount: number;
@@ -20,29 +21,31 @@ export async function exportPaymentsToExcel(
   options: { title?: string; filename?: string } = {},
 ) {
   const header = [
-    "Tenant",
+    "Building",
     "Room",
+    "Tenant",
     "Payment Date",
     "Months Covered",
-    "Amount",
     "Status",
+    "Amount",
   ];
 
   const aoa = [
     header,
     ...rows.map((r) => [
-      r.tenantName,
+      r.building,
       r.room,
+      r.tenantName,
       r.paymentDate,
       r.monthsCovered,
-      r.amount,
       r.status,
+      r.amount,
     ]),
   ];
 
   const total = rows.reduce((s, r) => s + (r.amount || 0), 0);
   aoa.push([]);
-  aoa.push(["", "", "", "Total", total, ""]);
+  aoa.push(["", "", "", "", "Total", "", total]);
 
   const ws = XLSX.utils.aoa_to_sheet(aoa as any);
   const wb = XLSX.utils.book_new();
@@ -76,15 +79,16 @@ export async function exportPaymentsToPDF(
   }
 
   const head = [
-    ["Tenant", "Room", "Payment Date", "Months", "Amount", "Status"],
+    ["Building", "Room", "Tenant", "Payment Date", "Months", "Status", "Amount"],
   ];
   const body = rows.map((r) => [
-    r.tenantName,
+    r.building,
     r.room,
+    r.tenantName,
     r.paymentDate,
     String(r.monthsCovered),
-    `RWF ${r.amount.toLocaleString("en-US")}`,
     r.status,
+    `RWF ${r.amount.toLocaleString("en-US")}`,
   ]);
 
   autoTable(doc, {
@@ -95,7 +99,7 @@ export async function exportPaymentsToPDF(
     headStyles: { fillColor: [230, 230, 230] },
     alternateRowStyles: { fillColor: [245, 245, 245] },
     columnStyles: {
-      4: { halign: "right" },
+      6: { halign: "right" },
     },
     margin: { left: margin, right: margin },
   });

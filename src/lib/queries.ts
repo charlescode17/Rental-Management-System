@@ -31,10 +31,10 @@ export async function addBuilding(building: { id?: string; name: string }) {
   return { id: data.id, name: data.name } as Building;
 }
 
-export async function updateBuilding(id: string, name: string) {
+export async function updateBuilding(id: string, updates: { name: string }) {
   const { data, error } = await supabase
     .from("buildings")
-    .update({ name })
+    .update({ name: updates.name })
     .eq("id", id)
     .select()
     .single();
@@ -45,6 +45,42 @@ export async function updateBuilding(id: string, name: string) {
 
 export async function deleteBuilding(id: string) {
   const { error } = await supabase.from("buildings").delete().eq("id", id);
+  if (error) throw error;
+  return true;
+}
+
+export async function fetchFloors(buildingId: string) {
+  const { data, error } = await supabase
+    .from("floors")
+    .select("id, building_id, name")
+    .eq("building_id", buildingId)
+    .order("name", { ascending: true });
+
+  if (error) throw error;
+
+  return (data ?? []).map((row: any) => ({
+    id: row.id,
+    name: row.name,
+  })) as Array<{ id: string; name: string }>;
+}
+
+export async function addFloor(buildingId: string, name: string) {
+  const { data, error } = await supabase
+    .from("floors")
+    .insert({
+      id: `floor-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      building_id: buildingId,
+      name,
+    })
+    .select("id, building_id, name")
+    .single();
+
+  if (error) throw error;
+  return { id: data.id, name: data.name } as { id: string; name: string };
+}
+
+export async function deleteFloor(floorId: string) {
+  const { error } = await supabase.from("floors").delete().eq("id", floorId);
   if (error) throw error;
   return true;
 }
@@ -282,7 +318,7 @@ export async function addRoom(room: Partial<Room> & { building_id?: string }) {
 export async function updateRoom(
   id: string,
   updates: {
-    floor: Floor;
+    floor: string;
     number: string;
     baseRent: number;
     buildingId: string;
