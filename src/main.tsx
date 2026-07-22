@@ -30,6 +30,30 @@ function ClerkProviderWithRoutes({
   );
 }
 
+function MissingKeyScreen() {
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 24,
+        fontFamily: "system-ui, sans-serif",
+        textAlign: "center",
+      }}
+    >
+      <div>
+        <h1 style={{ fontSize: 20, marginBottom: 8 }}>Configuration error</h1>
+        <p style={{ color: "#666", maxWidth: 420 }}>
+          VITE_CLERK_PUBLISHABLE_KEY is missing. Add it in Vercel → Settings →
+          Environment Variables, then redeploy.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <BrowserRouter>
@@ -38,7 +62,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
           <App />
         </ClerkProviderWithRoutes>
       ) : (
-        <App />
+        <MissingKeyScreen />
       )}
     </BrowserRouter>
   </React.StrictMode>,
