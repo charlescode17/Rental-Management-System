@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import html2canvas from "html2canvas";
 import { SignIn, SignUp, useAuth } from "@clerk/clerk-react";
+import Swal from "sweetalert2";
 import {
   Navigate,
   Route,
@@ -2516,28 +2517,108 @@ function PaymentsPage({
   //     window.setTimeout(() => setIsSharing(false), 500);
   //   }
   // }
+  // async function handleShare() {working wihout sweet alert
+  //   if (!receiptRef.current || !selectedPayment) return;
+  //   setIsSharing(true);
+  //   try {
+  //     const canvas = await html2canvas(receiptRef.current, {
+  //       backgroundColor: "#ffffff",
+  //       scale: 2,
+  //       useCORS: true,
+  //     });
+  //     const blob = await new Promise<Blob | null>((resolve) => {
+  //       canvas.toBlob((result) => resolve(result), "image/png");
+  //     });
+
+  //     if (!blob) {
+  //       alert("Couldn't generate the receipt image. Please try again.");
+  //       return;
+  //     }
+
+  //     const tenant = tenants.find(
+  //       (item) => item.id === selectedPayment.tenantId,
+  //     );
+  //     const tenantName = tenant?.name ?? "tenant";
+  //     const file = new File([blob], `payment-receipt-${tenantName}.png`, {
+  //       type: "image/png",
+  //     });
+
+  //     // Web Share API with files is unreliable on desktop and some
+  //     // mobile browsers — the app receiving the share often only
+  //     // honors text/title and silently drops the image, which is
+  //     // why it was showing up as "text only" in WhatsApp. Only trust
+  //     // it on touch devices, where it tends to actually work.
+  //     const isMobile = "ontouchstart" in window || navigator.maxTouchPoints > 0;
+
+  //     if (
+  //       isMobile &&
+  //       navigator.share &&
+  //       navigator.canShare &&
+  //       navigator.canShare({ files: [file] })
+  //     ) {
+  //       try {
+  //         await navigator.share({
+  //           files: [file],
+  //         });
+  //         return;
+  //       } catch (err) {
+  //         // User cancelled, or the share target rejected the file —
+  //         // fall through to the guaranteed download below either way.
+  //         console.error("Native share failed or cancelled:", err);
+  //       }
+  //     }
+
+  //     // Guaranteed path: download the image directly. Works on every
+  //     // device/browser, and the person can attach it in WhatsApp (or
+  //     // anywhere) manually — this always includes the full receipt,
+  //     // never degrades to text-only.
+  //     const url = URL.createObjectURL(blob);
+  //     const a = document.createElement("a");
+  //     a.href = url;
+  //     a.download = `payment-receipt-${tenantName}.png`;
+  //     a.click();
+  //     URL.revokeObjectURL(url);
+  //     alert(
+  //       "Receipt image saved. Open WhatsApp and attach it from your downloads to share.",
+  //     );
+  //   } catch (err) {
+  //     console.error("Failed to prepare receipt for sharing:", err);
+  //     alert("Something went wrong preparing the receipt. Please try again.");
+  //   } finally {
+  //     window.setTimeout(() => setIsSharing(false), 500);
+  //   }
+  // }
   async function handleShare() {
     if (!receiptRef.current || !selectedPayment) return;
     setIsSharing(true);
+
     try {
       const canvas = await html2canvas(receiptRef.current, {
         backgroundColor: "#ffffff",
         scale: 2,
         useCORS: true,
       });
+
       const blob = await new Promise<Blob | null>((resolve) => {
         canvas.toBlob((result) => resolve(result), "image/png");
       });
 
       if (!blob) {
-        alert("Couldn't generate the receipt image. Please try again.");
+        await Swal.fire({
+          icon: "error",
+          title: "Receipt Generation Failed",
+          text: "Couldn't generate the receipt image. Please try again.",
+          confirmButtonText: "OK",
+        });
         return;
       }
 
       const tenant = tenants.find(
         (item) => item.id === selectedPayment.tenantId,
       );
+
       const tenantName = tenant?.name ?? "tenant";
+
       const file = new File([blob], `payment-receipt-${tenantName}.png`, {
         type: "image/png",
       });
@@ -2567,22 +2648,36 @@ function PaymentsPage({
         }
       }
 
-      // Guaranteed path: download the image directly. Works on every
-      // device/browser, and the person can attach it in WhatsApp (or
-      // anywhere) manually — this always includes the full receipt,
-      // never degrades to text-only.
+      // Guaranteed path: download the image directly.
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
       a.download = `payment-receipt-${tenantName}.png`;
       a.click();
       URL.revokeObjectURL(url);
-      alert(
-        "Receipt image saved. Open WhatsApp and attach it from your downloads to share.",
-      );
+
+      await Swal.fire({
+        icon: "success",
+        title: "Receipt Saved!",
+        text: "The receipt image has been downloaded successfully.",
+        showCancelButton: true,
+        confirmButtonText: "Open WhatsApp",
+        cancelButtonText: "Close",
+        confirmButtonColor: "#25D366",
+      }).then((result) => {
+        if (result.isConfirmed) {
+          window.open("https://wa.me/", "_blank");
+        }
+      });
     } catch (err) {
       console.error("Failed to prepare receipt for sharing:", err);
-      alert("Something went wrong preparing the receipt. Please try again.");
+
+      await Swal.fire({
+        icon: "error",
+        title: "Something Went Wrong",
+        text: "Failed to prepare the receipt. Please try again.",
+        confirmButtonText: "OK",
+      });
     } finally {
       window.setTimeout(() => setIsSharing(false), 500);
     }
