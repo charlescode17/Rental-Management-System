@@ -86,6 +86,14 @@ export async function deleteFloor(floorId: string) {
 }
 
 export async function fetchRooms() {
+  // FIX: this used to join buildings with `buildings!inner(name)`. An
+  // INNER join silently DROPS any room whose building_id doesn't resolve
+  // to a real building row (deleted building, bad data, etc) — meaning
+  // that room would vanish from every page (Dashboard occupancy counts,
+  // Buildings page, Tenants page) with no error or warning. Switched to a
+  // regular (left) join so every room always comes back; buildingName is
+  // just empty for the rare orphaned one, and the Buildings page already
+  // has an "Unassigned Rooms" section to surface those.
   const { data, error } = await supabase
     .from("rooms")
     .select(
@@ -95,7 +103,7 @@ export async function fetchRooms() {
       number,
       base_rent,
       building_id,
-      buildings!inner(name)
+      buildings(name)
     `,
     )
     .order("number", { ascending: true });
@@ -115,6 +123,13 @@ export async function fetchRooms() {
 }
 
 export async function fetchTenants() {
+  // FIX: same issue as fetchRooms — this used to inner-join rooms (and
+  // buildings within rooms). If a tenant's room was ever deleted or
+  // pointed at a building that no longer exists, that tenant would
+  // silently disappear from every list (Tenants page, Dashboard occupancy,
+  // "Needs Attention" reminders) with no indication anything was wrong.
+  // Left joins mean a tenant always shows up even if their room/building
+  // link is broken; roomNumber/roomFloor/buildingName just come back empty.
   const { data, error } = await supabase
     .from("tenants")
     .select(
@@ -127,7 +142,7 @@ export async function fetchTenants() {
       monthly_rent,
       due_day,
       start_date,
-      rooms!inner(id, number, floor, building_id, buildings!inner(name))
+      rooms(id, number, floor, building_id, buildings(name))
     `,
     )
     .order("name", { ascending: true });
@@ -155,6 +170,9 @@ export async function fetchTenants() {
 }
 
 export async function fetchPayments() {
+  // FIX: same issue again — an inner join on tenants meant a payment whose
+  // tenant was ever deleted would silently vanish from "Collected This
+  // Month", Reports, and everywhere else. Left join keeps every payment.
   const { data, error } = await supabase
     .from("payments")
     .select(
@@ -166,7 +184,7 @@ export async function fetchPayments() {
       recorded_date,
       amount,
       days_offset,
-      tenants!inner(name)
+      tenants(name)
     `,
     )
     .order("recorded_date", { ascending: false });
@@ -271,7 +289,67 @@ export async function addPayment(
     .single();
 
   if (error) throw error;
-  return data;
+
+  // FIX: this used to `return data;` — the raw Supabase row, still in
+  // snake_case (tenant_id, period_start, months_covered, days_offset).
+  // The rest of the app reads Payment objects in camelCase (tenantId,
+  // periodStart, ...), so the just-added payment would silently fail
+  // every `p.periodStart === month` / `p.tenantId === id` check until the
+  // next full page reload re-fetched it correctly. This is what caused
+  // the Dashboard (and Payments list) to show stale "Collected This
+  // Month" / "Needs Attention" numbers right after recording a payment,
+  // while Reports looked fine after a refresh. Mapping to the same shape
+  // fetchPayments() and updatePayment() use fixes that permanently.
+  return {
+    id: data.id,
+    tenantId: data.tenant_id,
+    monthsCovered: data.months_covered,
+    periodStart: data.period_start,
+    recordedDate: data.recorded_date,
+    amount: data.amount,
+    daysOffset: data.days_offset,
+  } as Payment;
+}
+
+export async function updatePayment(
+  id: string,
+  updates: {
+    monthsCovered?: number;
+    periodStart?: string;
+    recordedDate?: string;
+    amount?: number;
+    daysOffset?: number;
+  },
+) {
+  const { data, error } = await supabase
+    .from("payments")
+    .update({
+      months_covered: updates.monthsCovered,
+      period_start: updates.periodStart,
+      recorded_date: updates.recordedDate,
+      amount: updates.amount,
+      days_offset: updates.daysOffset,
+    })
+    .eq("id", id)
+    .select()
+    .single();
+
+  if (error) throw error;
+  return {
+    id: data.id,
+    tenantId: data.tenant_id,
+    monthsCovered: data.months_covered,
+    periodStart: data.period_start,
+    recordedDate: data.recorded_date,
+    amount: data.amount,
+    daysOffset: data.days_offset,
+  } as Payment;
+}
+
+export async function deletePayment(id: string) {
+  const { error } = await supabase.from("payments").delete().eq("id", id);
+  if (error) throw error;
+  return true;
 }
 
 export async function addRoom(room: Partial<Room> & { building_id?: string }) {
@@ -291,7 +369,7 @@ export async function addRoom(room: Partial<Room> & { building_id?: string }) {
       number,
       base_rent,
       building_id,
-      buildings!inner(name)
+      buildings(name)
     `,
     )
     .single();
@@ -340,7 +418,7 @@ export async function updateRoom(
       number,
       base_rent,
       building_id,
-      buildings!inner(name)
+      buildings(name)
     `,
     )
     .single();

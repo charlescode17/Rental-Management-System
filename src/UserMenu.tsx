@@ -32,6 +32,8 @@ export default function UserMenu({
     user.primaryEmailAddress?.emailAddress ||
     "Account";
 
+  const email = user.primaryEmailAddress?.emailAddress;
+
   const initials = fullName
     .split(" ")
     .map((n) => n[0])
@@ -50,14 +52,26 @@ export default function UserMenu({
   }
 
   return (
-    <div ref={menuRef} style={{ position: "relative" }}>
+    // FIX: this wrapper (and the button below) now carry width: "100%" +
+    // minWidth: 0. Without minWidth: 0, a flex item defaults to
+    // min-width: auto, which means it will never shrink below the width
+    // of its content — so a long name/email just overflowed the 240px
+    // sidebar instead of truncating. Setting minWidth: 0 lets the name
+    // span's overflow/textOverflow/whiteSpace rules actually take effect.
+    <div
+      ref={menuRef}
+      style={{ position: "relative", width: "100%", minWidth: 0 }}
+    >
       <button
         onClick={() => setOpen((v) => !v)}
+        title={email ? `${fullName} · ${email}` : fullName}
         style={{
           display: "flex",
           alignItems: "center",
           justifyContent: collapsed ? "center" : "flex-start",
           gap: collapsed ? 0 : 10,
+          width: "100%",
+          minWidth: 0,
           background: "transparent",
           border: "none",
           cursor: "pointer",
@@ -75,6 +89,7 @@ export default function UserMenu({
               height: 32,
               borderRadius: "50%",
               objectFit: "cover",
+              flexShrink: 0,
             }}
           />
         ) : (
@@ -90,13 +105,32 @@ export default function UserMenu({
               justifyContent: "center",
               fontSize: 13,
               fontWeight: 700,
+              flexShrink: 0,
             }}
           >
             {initials || "U"}
           </div>
         )}
         {!collapsed ? (
-          <span style={{ fontSize: 14, fontWeight: 600 }}>{fullName}</span>
+          // FIX: long emails/usernames used to overflow the sidebar
+          // instead of being shortened. This now truncates with an
+          // ellipsis (…) once the name is wider than the available
+          // space — the `title` attribute above shows the full name/email
+          // on hover, and the dropdown below always shows it in full.
+          <span
+            style={{
+              fontSize: 14,
+              fontWeight: 600,
+              minWidth: 0,
+              flex: "1 1 auto",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              textAlign: "left",
+            }}
+          >
+            {fullName}
+          </span>
         ) : null}
       </button>
 
@@ -109,12 +143,45 @@ export default function UserMenu({
             backgroundColor: "var(--surface)",
             border: "1px solid var(--border)",
             borderRadius: "var(--radius)",
-            minWidth: 160,
+            minWidth: 200,
+            maxWidth: 260,
             boxShadow: "0 4px 12px rgba(0,0,0,0.12)",
             zIndex: 50,
             overflow: "hidden",
           }}
         >
+          {/* Full, untruncated name/email — this is the "see it in full
+              somewhere" half of the fix, since the sidebar button itself
+              always stays short. */}
+          <div
+            style={{
+              padding: "10px 14px",
+              borderBottom: "1px solid var(--border)",
+            }}
+          >
+            <div
+              style={{
+                fontSize: 13,
+                fontWeight: 600,
+                color: "var(--text)",
+                wordBreak: "break-word",
+              }}
+            >
+              {fullName}
+            </div>
+            {email && email !== fullName ? (
+              <div
+                style={{
+                  fontSize: 11,
+                  color: "var(--text-muted)",
+                  wordBreak: "break-word",
+                  marginTop: 2,
+                }}
+              >
+                {email}
+              </div>
+            ) : null}
+          </div>
           <button
             onClick={handleLogout}
             style={{
@@ -126,7 +193,6 @@ export default function UserMenu({
               cursor: "pointer",
               fontSize: 14,
               color: "var(--text)",
-              borderTop: "1px solid var(--border)",
               display: "flex",
               alignItems: "center",
               gap: 10,

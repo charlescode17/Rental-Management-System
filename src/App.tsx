@@ -52,6 +52,8 @@ import {
   fetchPayments,
   addTenant,
   addPayment,
+  updatePayment,
+  deletePayment,
   addRoom,
   updateRoom,
   deleteRoom,
@@ -123,10 +125,61 @@ function roomLocationCompact(
   return `${displayName} · ${floorAndRoom}`;
 }
 
+// The month the dashboard treats as "now". Every "this month" calculation
+// below (paid status, collected total, payments-recorded count) is driven
+// from this single constant so they can never drift out of sync with
+// each other.
+const CURRENT_MONTH = "2026-07";
+
+// Turns a "YYYY-MM" period start into the "YYYY-MM" key `offset` months
+// later. Used to walk forward through every month a payment covers.
+function shiftMonth(periodStart: string, offset: number): string {
+  const [y, m] = periodStart.split("-").map((v) => parseInt(v, 10));
+  const total = y * 12 + (m - 1) + offset;
+  const newYear = Math.floor(total / 12);
+  const newMonth = (total % 12) + 1;
+  return `${newYear}-${String(newMonth).padStart(2, "0")}`;
+}
+
+// FIX: a payment's monthsCovered can span forward from its periodStart
+// (e.g. periodStart "2026-05", monthsCovered 6 covers May through
+// October). This checks every month in that range instead of only the
+// exact periodStart, so a tenant who paid several months in advance is
+// correctly recognized as paid for the current month.
+function paymentCoversMonth(payment: Payment, month: string): boolean {
+  const months = Math.max(1, payment.monthsCovered || 1);
+  for (let i = 0; i < months; i++) {
+    if (shiftMonth(payment.periodStart, i) === month) return true;
+  }
+  return false;
+}
+
 function paidThisMonth(tenantId: string, payments: Payment[]) {
   return payments.some(
-    (p) => p.tenantId === tenantId && p.periodStart === "2026-07",
+    (p) => p.tenantId === tenantId && paymentCoversMonth(p, CURRENT_MONTH),
   );
+}
+
+// Computes how many days early/late a payment was, based on the tenant's
+// due day within the period it covers. Used whenever a payment is created
+// or edited so daysOffset (and therefore the early/on-time/late tag and
+// every stat derived from it) is always accurate instead of a hardcoded 0.
+function computeDaysOffset(
+  recordedDate: string,
+  periodStart: string,
+  dueDay: number,
+): number {
+  const [year, month] = periodStart.split("-").map((v) => parseInt(v, 10));
+  if (!year || !month) return 0;
+  const dueDate = new Date(year, month - 1, dueDay);
+  const recorded = new Date(recordedDate);
+  if (Number.isNaN(dueDate.getTime()) || Number.isNaN(recorded.getTime())) {
+    return 0;
+  }
+  dueDate.setHours(0, 0, 0, 0);
+  recorded.setHours(0, 0, 0, 0);
+  const diffMs = recorded.getTime() - dueDate.getTime();
+  return Math.round(diffMs / (1000 * 60 * 60 * 24));
 }
 
 // Today = 2026-07-19, day 19
@@ -172,9 +225,16 @@ function buildReminders(
   return rows;
 }
 
+// FIX: this used to filter by `p.periodStart === "2026-07"`, meaning a
+// payment actually collected in July but covering an earlier period
+// (e.g. someone catching up on May) was excluded, AND a multi-month
+// advance payment collected in July but starting in an earlier
+// periodStart was also excluded — undercounting real cash collected.
+// "Collected This Month" should mean money that actually came in this
+// month, which is what recordedDate records — so we filter on that.
 function collectThisMonth(payments: Payment[]) {
   return payments
-    .filter((p) => p.periodStart === "2026-07")
+    .filter((p) => p.recordedDate.startsWith(CURRENT_MONTH))
     .reduce((s, p) => s + p.amount, 0);
 }
 
@@ -397,6 +457,20 @@ const GLOBAL_CSS = `
 }
 
 .tenants-toolbar { flex-wrap: wrap; }
+
+/* Payments page: search + status filter toolbar */
+.payments-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 14px 20px; border-bottom: 1px solid var(--border); }
+.payments-search { position: relative; flex: 1 1 220px; }
+.payments-search input { width: 100%; padding: 8px 12px 8px 32px; border: 1px solid var(--input-border); border-radius: var(--radius-sm); background: var(--input-bg); color: var(--text); font-size: 13px; outline: none; }
+.payments-search svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--text-muted); pointer-events: none; }
+.payments-status-filters { display: flex; gap: 3px; padding: 3px; border-radius: 8px; background: var(--surface2); flex-wrap: wrap; }
+.payments-status-filters button { min-height: 32px; padding: 0 10px; border: 0; border-radius: 6px; background: transparent; color: var(--text-muted); font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.payments-status-filters button:hover, .payments-status-filters button.is-active { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+@media (max-width: 640px) {
+  .payments-toolbar { flex-direction: column; align-items: stretch; }
+  .payments-status-filters { justify-content: stretch; }
+  .payments-status-filters button { flex: 1; }
+}
 
 /* Settings page responsive layout */
 .settings-page {
@@ -1189,13 +1263,36 @@ function DashboardPage({
   tenants: Tenant[];
   payments: Payment[];
 }) {
-  // FIX: occupancy is now derived from actual tenant→room assignments
-  // instead of the (previously stale) room.occupied flag, so this always
-  // reflects the real, current state of your buildings.
-  const occupied = rooms.filter(
-    (r) => !!getTenantForRoom(r.id, tenants),
-  ).length;
-  const total = rooms.length;
+  // FIX: occupancy is derived from actual tenant→room assignments instead
+  // of any stale room.occupied flag. On top of that we also:
+  //   1. de-duplicate rooms by id before counting the total, so a room
+  //      that appears twice in the fetched list can't inflate the total.
+  //   2. only count a room as "occupied" if a tenant's roomId points to a
+  //      room that actually still exists, counting each occupied room
+  //      exactly once via a Set of room ids.
+  // Together this makes "Rooms Occupied" and the vacant count accurate.
+  const uniqueRooms = useMemo(() => {
+    const seen = new Set<string>();
+    return rooms.filter((r) => {
+      if (seen.has(r.id)) return false;
+      seen.add(r.id);
+      return true;
+    });
+  }, [rooms]);
+
+  const occupiedRoomIds = useMemo(() => {
+    const validRoomIds = new Set(uniqueRooms.map((r) => r.id));
+    const occupiedIds = new Set<string>();
+    for (const t of tenants) {
+      if (t.roomId && validRoomIds.has(t.roomId)) {
+        occupiedIds.add(t.roomId);
+      }
+    }
+    return occupiedIds;
+  }, [uniqueRooms, tenants]);
+
+  const occupied = occupiedRoomIds.size;
+  const total = uniqueRooms.length;
   const collected = collectThisMonth(payments);
   const reminders = buildReminders(tenants, rooms, payments);
   const needsAttention = reminders.length;
@@ -1293,7 +1390,10 @@ function DashboardPage({
           <div
             style={{ marginTop: 8, fontSize: 12, color: "var(--text-muted)" }}
           >
-            {payments.filter((p) => p.periodStart === "2026-07").length}{" "}
+            {
+              payments.filter((p) => p.recordedDate.startsWith(CURRENT_MONTH))
+                .length
+            }{" "}
             payments recorded
           </div>
         </Card>
@@ -2215,11 +2315,22 @@ function PaymentsPage({
   tenants,
   payments,
   onAddPayment,
+  onUpdatePayment,
+  onDeletePayment,
 }: {
   rooms: Room[];
   tenants: Tenant[];
   payments: Payment[];
   onAddPayment: (p: Payment) => void;
+  onUpdatePayment: (
+    paymentId: string,
+    updates: {
+      monthsCovered: number;
+      periodStart: string;
+      recordedDate: string;
+    },
+  ) => void;
+  onDeletePayment: (paymentId: string) => void;
 }) {
   const [search, setSearch] = useState("");
   const [selectedTenant, setSelectedTenant] = useState<Tenant | null>(null);
@@ -2234,6 +2345,22 @@ function PaymentsPage({
   const [isSharing, setIsSharing] = useState(false);
   const receiptRef = useRef<HTMLDivElement | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+
+  // Payments search + status filter (searches the FULL payment history,
+  // not just the most recent records) — matches tenant name, room, floor,
+  // building, amount, period, and status tag.
+  const [paymentSearch, setPaymentSearch] = useState("");
+  const [paymentStatusFilter, setPaymentStatusFilter] = useState<
+    "all" | "early" | "on-time" | "late"
+  >("all");
+
+  // Edit-in-place state for the payment detail panel
+  const [editingPaymentId, setEditingPaymentId] = useState<string | null>(null);
+  const [editPaymentForm, setEditPaymentForm] = useState({
+    months: "1",
+    periodStart: "2026-07",
+    recordedDate: "2026-07-19",
+  });
 
   const matchedTenants =
     search.trim().length > 0
@@ -2276,7 +2403,70 @@ function PaymentsPage({
     setTimeout(() => setSubmitted(false), 3000);
   }
 
-  const recentPayments = [...payments].reverse().slice(0, 15);
+  // All payments, newest first, with search + status filter applied.
+  const filteredPayments = useMemo(() => {
+    const sorted = [...payments].sort((a, b) =>
+      a.recordedDate < b.recordedDate ? 1 : -1,
+    );
+    const q = paymentSearch.trim().toLowerCase();
+    return sorted.filter((payment) => {
+      if (
+        paymentStatusFilter !== "all" &&
+        getTag(payment.daysOffset) !== paymentStatusFilter
+      ) {
+        return false;
+      }
+      if (!q) return true;
+      const tenant = tenants.find((t) => t.id === payment.tenantId);
+      const room = tenant
+        ? rooms.find((r) => r.id === tenant.roomId)
+        : undefined;
+      const haystack = [
+        tenant?.name,
+        room?.number,
+        room?.floor,
+        room?.buildingName,
+        fmtRWF(payment.amount),
+        String(payment.amount),
+        tagLabel(payment.daysOffset),
+        payment.periodStart,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [payments, paymentSearch, paymentStatusFilter, tenants, rooms]);
+
+  function startEditPayment(payment: Payment) {
+    setEditingPaymentId(payment.id);
+    setEditPaymentForm({
+      months: String(payment.monthsCovered),
+      periodStart: payment.periodStart,
+      recordedDate: payment.recordedDate,
+    });
+  }
+
+  function submitEditPayment(e: React.FormEvent) {
+    e.preventDefault();
+    if (!editingPaymentId) return;
+    const monthsCovered = parseInt(editPaymentForm.months) || 1;
+    onUpdatePayment(editingPaymentId, {
+      monthsCovered,
+      periodStart: editPaymentForm.periodStart,
+      recordedDate: editPaymentForm.recordedDate,
+    });
+    setEditingPaymentId(null);
+    setSelectedPayment(null);
+  }
+
+  function handleDeletePaymentClick(payment: Payment) {
+    if (window.confirm("Delete this payment record? This cannot be undone.")) {
+      onDeletePayment(payment.id);
+      setSelectedPayment(null);
+      setEditingPaymentId(null);
+    }
+  }
 
   async function handleShare() {
     if (!receiptRef.current || !selectedPayment) return;
@@ -2646,14 +2836,14 @@ function PaymentsPage({
             <div
               style={{ fontWeight: 600, fontSize: 14, color: "var(--text)" }}
             >
-              Recent Payments
+              Payments
             </div>
             <div className="payment-header-actions">
               <div
                 className="mono"
                 style={{ fontSize: 12, color: "var(--text-muted)" }}
               >
-                {payments.length} total
+                {filteredPayments.length} of {payments.length}
               </div>
               <div
                 className="payment-view-toggle"
@@ -2681,18 +2871,57 @@ function PaymentsPage({
               </div>
             </div>
           </div>
-          {recentPayments.length === 0 ? (
-            <div className="payment-empty">No payments recorded yet.</div>
+
+          <div className="payments-toolbar" role="search">
+            <div className="payments-search">
+              {Icon.search}
+              <input
+                type="search"
+                placeholder="Search by tenant, room, amount, status…"
+                value={paymentSearch}
+                onChange={(e) => setPaymentSearch(e.target.value)}
+              />
+            </div>
+            <div
+              className="payments-status-filters"
+              aria-label="Filter payments by status"
+            >
+              {(["all", "early", "on-time", "late"] as const).map((value) => (
+                <button
+                  type="button"
+                  key={value}
+                  className={paymentStatusFilter === value ? "is-active" : ""}
+                  onClick={() => setPaymentStatusFilter(value)}
+                  aria-pressed={paymentStatusFilter === value}
+                >
+                  {value === "all"
+                    ? "All"
+                    : value === "early"
+                      ? "Early"
+                      : value === "on-time"
+                        ? "On time"
+                        : "Late"}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {filteredPayments.length === 0 ? (
+            <div className="payment-empty">
+              {payments.length === 0
+                ? "No payments recorded yet."
+                : "No payments match your search."}
+            </div>
           ) : paymentViewMode === "list" ? (
             <PaymentList
-              payments={recentPayments}
+              payments={filteredPayments}
               tenants={tenants}
               rooms={rooms}
               onSelect={setSelectedPayment}
             />
           ) : (
             <PaymentGrid
-              payments={recentPayments}
+              payments={filteredPayments}
               tenants={tenants}
               rooms={rooms}
               onSelect={setSelectedPayment}
@@ -2708,10 +2937,14 @@ function PaymentsPage({
             const paymentRoom = paymentTenant
               ? rooms.find((room) => room.id === paymentTenant.roomId)
               : undefined;
+            const isEditingThis = editingPaymentId === selectedPayment.id;
             return (
               <div
                 className="payment-detail-backdrop"
-                onClick={() => setSelectedPayment(null)}
+                onClick={() => {
+                  setSelectedPayment(null);
+                  setEditingPaymentId(null);
+                }}
               >
                 <Card
                   className="payment-detail-panel"
@@ -2720,182 +2953,325 @@ function PaymentsPage({
                   <div className="payment-detail-header">
                     <div>
                       <span className="payment-detail-eyebrow">
-                        Payment information
+                        {isEditingThis
+                          ? "Editing payment"
+                          : "Payment information"}
                       </span>
                       <h2>{paymentTenant?.name ?? "Unknown tenant"}</h2>
                     </div>
                     <div
                       style={{ display: "flex", alignItems: "center", gap: 8 }}
                     >
+                      {!isEditingThis && (
+                        <>
+                          <button
+                            type="button"
+                            className="payment-detail-close"
+                            onClick={handleShare}
+                            aria-label="Share payment receipt"
+                            disabled={isSharing}
+                            style={{ opacity: isSharing ? 0.7 : 1 }}
+                          >
+                            {isSharing ? "Preparing..." : <Share size={16} />}
+                          </button>
+                          <button
+                            type="button"
+                            className="payment-detail-close"
+                            onClick={() => startEditPayment(selectedPayment)}
+                            aria-label="Edit payment"
+                            title="Edit payment"
+                          >
+                            <Edit2 size={16} />
+                          </button>
+                          <button
+                            type="button"
+                            className="payment-detail-close"
+                            onClick={() =>
+                              handleDeletePaymentClick(selectedPayment)
+                            }
+                            aria-label="Delete payment"
+                            title="Delete payment"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </>
+                      )}
                       <button
                         type="button"
                         className="payment-detail-close"
-                        onClick={handleShare}
-                        aria-label="Share payment receipt"
-                        disabled={isSharing}
-                        style={{ opacity: isSharing ? 0.7 : 1 }}
-                      >
-                        {isSharing ? "Preparing..." : <Share size={16} />}
-                      </button>
-                      <button
-                        type="button"
-                        className="payment-detail-close"
-                        onClick={() => setSelectedPayment(null)}
+                        onClick={() => {
+                          setSelectedPayment(null);
+                          setEditingPaymentId(null);
+                        }}
                         aria-label="Close payment details"
                       >
                         <X size={17} />
                       </button>
                     </div>
                   </div>
-                  <div ref={receiptRef} style={{ padding: 4 }}>
-                    <div
+                  {isEditingThis ? (
+                    <form
+                      onSubmit={submitEditPayment}
                       style={{
-                        padding: 18,
-                        borderRadius: "var(--radius)",
-                        border: "1px solid var(--border)",
-                        backgroundColor: "var(--surface)",
-                        boxShadow: "var(--shadow)",
                         display: "flex",
                         flexDirection: "column",
-                        gap: 12,
+                        gap: 14,
+                        padding: "16px 2px 2px",
                       }}
                     >
+                      <Input
+                        label="Number of Months"
+                        type="number"
+                        min={1}
+                        max={12}
+                        value={editPaymentForm.months}
+                        onChange={(e) =>
+                          setEditPaymentForm((f) => ({
+                            ...f,
+                            months: e.target.value,
+                          }))
+                        }
+                        required
+                      />
+                      <div>
+                        <Label>Period Start (YYYY-MM)</Label>
+                        <input
+                          type="month"
+                          value={editPaymentForm.periodStart}
+                          onChange={(e) =>
+                            setEditPaymentForm((f) => ({
+                              ...f,
+                              periodStart: e.target.value,
+                            }))
+                          }
+                          style={{
+                            width: "100%",
+                            padding: "8px 12px",
+                            backgroundColor: "var(--input-bg)",
+                            border: "1px solid var(--input-border)",
+                            borderRadius: "var(--radius-sm)",
+                            color: "var(--text)",
+                            outline: "none",
+                            fontSize: 14,
+                            fontFamily: "inherit",
+                          }}
+                        />
+                      </div>
+                      <div>
+                        <Label>Payment Date</Label>
+                        <input
+                          type="date"
+                          value={editPaymentForm.recordedDate}
+                          onChange={(e) =>
+                            setEditPaymentForm((f) => ({
+                              ...f,
+                              recordedDate: e.target.value,
+                            }))
+                          }
+                          style={{
+                            width: "100%",
+                            padding: "8px 12px",
+                            backgroundColor: "var(--input-bg)",
+                            border: "1px solid var(--input-border)",
+                            borderRadius: "var(--radius-sm)",
+                            color: "var(--text)",
+                            outline: "none",
+                            fontSize: 14,
+                            fontFamily: "inherit",
+                          }}
+                        />
+                      </div>
+                      {paymentTenant && (
+                        <div
+                          style={{ fontSize: 12, color: "var(--text-muted)" }}
+                        >
+                          New amount will be recalculated as{" "}
+                          {parseInt(editPaymentForm.months) || 1} month(s) ×{" "}
+                          {fmtRWF(paymentTenant.monthlyRent)} ={" "}
+                          {fmtRWF(
+                            (parseInt(editPaymentForm.months) || 1) *
+                              paymentTenant.monthlyRent,
+                          )}
+                        </div>
+                      )}
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <Button type="submit" style={{ flex: 1 }}>
+                          Save Changes
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          onClick={() => setEditingPaymentId(null)}
+                          style={{ flex: 1 }}
+                        >
+                          Cancel
+                        </Button>
+                      </div>
+                    </form>
+                  ) : (
+                    <div ref={receiptRef} style={{ padding: 4 }}>
                       <div
                         style={{
+                          padding: 18,
+                          borderRadius: "var(--radius)",
+                          border: "1px solid var(--border)",
+                          backgroundColor: "var(--surface)",
+                          boxShadow: "var(--shadow)",
                           display: "flex",
-                          justifyContent: "space-between",
-                          alignItems: "center",
+                          flexDirection: "column",
                           gap: 12,
                         }}
                       >
-                        <div>
+                        <div
+                          style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            gap: 12,
+                          }}
+                        >
+                          <div>
+                            <div
+                              style={{
+                                fontSize: 12,
+                                color: "var(--text-muted)",
+                              }}
+                            >
+                              Rent Manager
+                            </div>
+                            <div
+                              style={{ fontWeight: 700, color: "var(--text)" }}
+                            >
+                              {paymentRoom?.buildingName ?? "Building"}
+                            </div>
+                          </div>
+                          <PaymentTagBadge
+                            daysOffset={selectedPayment.daysOffset}
+                          />
+                        </div>
+
+                        <div
+                          style={{
+                            padding: "12px 14px",
+                            borderRadius: "var(--radius-sm)",
+                            backgroundColor: "var(--surface2)",
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: 6,
+                          }}
+                        >
                           <div
                             style={{ fontSize: 12, color: "var(--text-muted)" }}
                           >
-                            Rent Manager
+                            Tenant
                           </div>
                           <div
                             style={{ fontWeight: 700, color: "var(--text)" }}
                           >
-                            {paymentRoom?.buildingName ?? "Building"}
+                            {paymentTenant?.name ?? "Unknown tenant"}
+                          </div>
+                          <div
+                            style={{ fontSize: 12, color: "var(--text-muted)" }}
+                          >
+                            Room: {roomLocation(paymentRoom)}
                           </div>
                         </div>
-                        <PaymentTagBadge
-                          daysOffset={selectedPayment.daysOffset}
-                        />
-                      </div>
 
-                      <div
-                        style={{
-                          padding: "12px 14px",
-                          borderRadius: "var(--radius-sm)",
-                          backgroundColor: "var(--surface2)",
-                          display: "flex",
-                          flexDirection: "column",
-                          gap: 6,
-                        }}
-                      >
-                        <div
-                          style={{ fontSize: 12, color: "var(--text-muted)" }}
-                        >
-                          Tenant
+                        <div style={{ display: "grid", gap: 8 }}>
+                          <div
+                            style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              alignItems: "center",
+                              gap: 10,
+                            }}
+                          >
+                            <div
+                              style={{
+                                fontSize: 12,
+                                color: "var(--text-muted)",
+                              }}
+                            >
+                              Payment date
+                            </div>
+                            <div
+                              style={{ fontWeight: 600, color: "var(--text)" }}
+                            >
+                              {selectedPayment.recordedDate}
+                            </div>
+                          </div>
+                          <div
+                            style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              alignItems: "center",
+                              gap: 10,
+                            }}
+                          >
+                            <div
+                              style={{
+                                fontSize: 12,
+                                color: "var(--text-muted)",
+                              }}
+                            >
+                              Months covered
+                            </div>
+                            <div
+                              style={{ fontWeight: 600, color: "var(--text)" }}
+                            >
+                              {selectedPayment.monthsCovered}
+                            </div>
+                          </div>
                         </div>
-                        <div style={{ fontWeight: 700, color: "var(--text)" }}>
-                          {paymentTenant?.name ?? "Unknown tenant"}
-                        </div>
-                        <div
-                          style={{ fontSize: 12, color: "var(--text-muted)" }}
-                        >
-                          Room: {roomLocation(paymentRoom)}
-                        </div>
-                      </div>
 
-                      <div style={{ display: "grid", gap: 8 }}>
                         <div
                           style={{
+                            padding: "14px 16px",
+                            borderRadius: "var(--radius-sm)",
+                            backgroundColor: "var(--nav-active-bg)",
                             display: "flex",
-                            justifyContent: "space-between",
-                            alignItems: "center",
-                            gap: 10,
+                            flexDirection: "column",
+                            gap: 6,
                           }}
                         >
                           <div
                             style={{ fontSize: 12, color: "var(--text-muted)" }}
                           >
-                            Payment date
+                            Amount Paid
                           </div>
                           <div
-                            style={{ fontWeight: 600, color: "var(--text)" }}
+                            className="mono"
+                            style={{
+                              fontSize: 28,
+                              fontWeight: 700,
+                              color: "var(--text)",
+                            }}
                           >
-                            {selectedPayment.recordedDate}
+                            {fmtRWF(selectedPayment.amount)}
                           </div>
                         </div>
+
                         <div
                           style={{
                             display: "flex",
                             justifyContent: "space-between",
                             alignItems: "center",
-                            gap: 10,
                           }}
                         >
                           <div
                             style={{ fontSize: 12, color: "var(--text-muted)" }}
                           >
-                            Months covered
+                            Status
                           </div>
                           <div
                             style={{ fontWeight: 600, color: "var(--text)" }}
                           >
-                            {selectedPayment.monthsCovered}
+                            {tagLabel(selectedPayment.daysOffset)}
                           </div>
-                        </div>
-                      </div>
-
-                      <div
-                        style={{
-                          padding: "14px 16px",
-                          borderRadius: "var(--radius-sm)",
-                          backgroundColor: "var(--nav-active-bg)",
-                          display: "flex",
-                          flexDirection: "column",
-                          gap: 6,
-                        }}
-                      >
-                        <div
-                          style={{ fontSize: 12, color: "var(--text-muted)" }}
-                        >
-                          Amount Paid
-                        </div>
-                        <div
-                          className="mono"
-                          style={{
-                            fontSize: 28,
-                            fontWeight: 700,
-                            color: "var(--text)",
-                          }}
-                        >
-                          {fmtRWF(selectedPayment.amount)}
-                        </div>
-                      </div>
-
-                      <div
-                        style={{
-                          display: "flex",
-                          justifyContent: "space-between",
-                          alignItems: "center",
-                        }}
-                      >
-                        <div
-                          style={{ fontSize: 12, color: "var(--text-muted)" }}
-                        >
-                          Status
-                        </div>
-                        <div style={{ fontWeight: 600, color: "var(--text)" }}>
-                          {tagLabel(selectedPayment.daysOffset)}
                         </div>
                       </div>
                     </div>
-                  </div>
+                  )}
                 </Card>
               </div>
             );
@@ -2988,10 +3364,12 @@ function ReportsPage({
           : tab === "annual"
             ? `Annual Rent Report — ${year}`
             : tab === "custom"
-              ? `Custom Rent Report — ${dateFrom} to ${dateTo}`
+              ? `Custom Rent Report`
               : `Tenant Rent Report`;
+      const dateRangeLabel =
+        tab === "custom" ? `${dateFrom} to ${dateTo}` : undefined;
       const filename = makeFilename("xlsx");
-      await exportPaymentsToExcel(rows, { title, filename });
+      await exportPaymentsToExcel(rows, { title, filename, dateRangeLabel });
     } catch (err) {
       console.error("Export to Excel failed", err);
       alert("Failed to generate Excel file.");
@@ -3011,10 +3389,17 @@ function ReportsPage({
           : tab === "annual"
             ? `Annual Rent Report — ${year}`
             : tab === "custom"
-              ? `Custom Rent Report — ${dateFrom} to ${dateTo}`
+              ? `Custom Rent Report`
               : `Tenant Rent Report`;
+      const dateRangeLabel =
+        tab === "custom" ? `${dateFrom} to ${dateTo}` : undefined;
       const filename = makeFilename("pdf");
-      await exportPaymentsToPDF(rows, { title, filename, total });
+      await exportPaymentsToPDF(rows, {
+        title,
+        filename,
+        total,
+        dateRangeLabel,
+      });
     } catch (err) {
       console.error("Export to PDF failed", err);
       alert("Failed to generate PDF file.");
@@ -3283,7 +3668,15 @@ function ReportsPage({
                   minWidth: "680px",
                 }}
               >
-                {["Building", "Room", "Tenant", "Payment Date", "Months", "Status", "Amount"].map((h) => (
+                {[
+                  "Building",
+                  "Room",
+                  "Tenant",
+                  "Payment Date",
+                  "Months",
+                  "Status",
+                  "Amount",
+                ].map((h) => (
                   <div
                     key={h}
                     style={{
@@ -3316,7 +3709,9 @@ function ReportsPage({
                   const r = t ? rooms.find((rm) => rm.id === t.roomId) : null;
                   const buildingName = r?.buildingName ?? "—";
                   const roomLabel = r ? `${r.floor} · ${r.number}` : "—";
-                  const paymentDateFormatted = new Date(p.recordedDate).toLocaleDateString("en-US", {
+                  const paymentDateFormatted = new Date(
+                    p.recordedDate,
+                  ).toLocaleDateString("en-US", {
                     year: "numeric",
                     month: "short",
                     day: "numeric",
@@ -3327,7 +3722,8 @@ function ReportsPage({
                       className="table-row"
                       style={{
                         display: "grid",
-                        gridTemplateColumns: "100px 100px 1fr 110px 70px 80px 110px",
+                        gridTemplateColumns:
+                          "100px 100px 1fr 110px 70px 80px 110px",
                         gap: 12,
                         padding: "13px 20px",
                         alignItems: "center",
@@ -5430,14 +5826,78 @@ export default function App() {
 
   async function handleAddPayment(payment: Payment) {
     try {
+      // Recompute amount/daysOffset from the tenant's actual monthly rent
+      // and due day rather than trusting whatever the form last had —
+      // this is what keeps Dashboard, Payments, and Reports in agreement.
+      const tenant = tenants.find((t) => t.id === payment.tenantId);
+      const amount = tenant
+        ? tenant.monthlyRent * payment.monthsCovered
+        : payment.amount;
+      const daysOffset = tenant
+        ? computeDaysOffset(
+            payment.recordedDate,
+            payment.periodStart,
+            tenant.dueDay,
+          )
+        : payment.daysOffset;
       const savedPayment = await addPayment({
         ...payment,
         tenant_id: payment.tenantId,
+        amount,
+        daysOffset,
       });
       setPayments((ps) => [...ps, savedPayment as Payment]);
     } catch (err) {
       console.error("Failed to add payment", err);
       setError("Failed to add payment");
+    }
+  }
+
+  async function handleUpdatePayment(
+    paymentId: string,
+    updates: {
+      monthsCovered: number;
+      periodStart: string;
+      recordedDate: string;
+    },
+  ) {
+    try {
+      const existing = payments.find((p) => p.id === paymentId);
+      if (!existing) return;
+      const tenant = tenants.find((t) => t.id === existing.tenantId);
+      const amount = tenant
+        ? tenant.monthlyRent * updates.monthsCovered
+        : existing.amount;
+      const daysOffset = tenant
+        ? computeDaysOffset(
+            updates.recordedDate,
+            updates.periodStart,
+            tenant.dueDay,
+          )
+        : existing.daysOffset;
+      const saved = await updatePayment(paymentId, {
+        monthsCovered: updates.monthsCovered,
+        periodStart: updates.periodStart,
+        recordedDate: updates.recordedDate,
+        amount,
+        daysOffset,
+      });
+      setPayments((ps) =>
+        ps.map((p) => (p.id === paymentId ? (saved as Payment) : p)),
+      );
+    } catch (err) {
+      console.error("Failed to update payment", err);
+      setError("Failed to update payment");
+    }
+  }
+
+  async function handleDeletePayment(paymentId: string) {
+    try {
+      await deletePayment(paymentId);
+      setPayments((ps) => ps.filter((p) => p.id !== paymentId));
+    } catch (err) {
+      console.error("Failed to delete payment", err);
+      setError("Failed to delete payment");
     }
   }
 
@@ -5547,6 +6007,8 @@ export default function App() {
                       tenants={tenants}
                       payments={payments}
                       onAddPayment={handleAddPayment}
+                      onUpdatePayment={handleUpdatePayment}
+                      onDeletePayment={handleDeletePayment}
                     />
                   )}
                   {page === "reports" && (
