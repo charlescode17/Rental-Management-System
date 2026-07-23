@@ -2,6 +2,12 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import html2canvas from "html2canvas";
 import { SignIn, SignUp, useAuth } from "@clerk/clerk-react";
 import Swal from "sweetalert2";
+import DueDatesPanel from "./components/DueDatesPanel";
+import {
+  computeNextDueDate,
+  formatDaysLabel,
+  formatDateReadable,
+} from "./lib/dueDates";
 import {
   Navigate,
   Route,
@@ -130,12 +136,24 @@ function roomLocationCompact(
 // below (paid status, collected total, payments-recorded count) is driven
 // from this single constant so they can never drift out of sync with
 // each other.
-const CURRENT_MONTH = "2026-07";
+const now = new Date();
 
-// Turns a "YYYY-MM" period start into the "YYYY-MM" key `offset` months
-// later. Used to walk forward through every month a payment covers.
-function shiftMonth(periodStart: string, offset: number): string {
-  const [y, m] = periodStart.split("-").map((v) => parseInt(v, 10));
+const TODAY_DAY = now.getDate();
+const CURRENT_MONTH = `${now.getFullYear()}-${String(
+  now.getMonth() + 1,
+).padStart(2, "0")}`;
+
+// periodStart is now a full "YYYY-MM-DD" date (the day rent coverage
+// starts), not just a month. This pulls out the "YYYY-MM" key from it —
+// works whether periodStart is "2026-07" (legacy) or "2026-07-15" (new).
+function periodMonthKey(periodStart: string): string {
+  return periodStart.slice(0, 7);
+}
+
+// Turns a "YYYY-MM" key into the "YYYY-MM" key `offset` months later.
+// Used to walk forward through every month a payment covers.
+function shiftMonth(monthKey: string, offset: number): string {
+  const [y, m] = monthKey.split("-").map((v) => parseInt(v, 10));
   const total = y * 12 + (m - 1) + offset;
   const newYear = Math.floor(total / 12);
   const newMonth = (total % 12) + 1;
@@ -143,14 +161,15 @@ function shiftMonth(periodStart: string, offset: number): string {
 }
 
 // FIX: a payment's monthsCovered can span forward from its periodStart
-// (e.g. periodStart "2026-05", monthsCovered 6 covers May through
+// (e.g. periodStart "2026-05-01", monthsCovered 6 covers May through
 // October). This checks every month in that range instead of only the
 // exact periodStart, so a tenant who paid several months in advance is
 // correctly recognized as paid for the current month.
 function paymentCoversMonth(payment: Payment, month: string): boolean {
   const months = Math.max(1, payment.monthsCovered || 1);
+  const startKey = periodMonthKey(payment.periodStart);
   for (let i = 0; i < months; i++) {
-    if (shiftMonth(payment.periodStart, i) === month) return true;
+    if (shiftMonth(startKey, i) === month) return true;
   }
   return false;
 }
@@ -183,9 +202,9 @@ function computeDaysOffset(
   return Math.round(diffMs / (1000 * 60 * 60 * 24));
 }
 
-// Today = 2026-07-19, day 19
-const TODAY_DAY = 19;
-
+// Derive "today" from the real clock instead of a frozen date, so
+// reminders never drift out of sync with the rest of the app (which
+// uses new Date() everywhere else, e.g. PaymentsPage's todayStr).
 interface ReminderRow {
   tenant: Tenant;
   room: Room;
@@ -295,6 +314,37 @@ const GLOBAL_CSS = `
 @media (max-width: 640px) {
   .report-filters { flex-direction: column !important; align-items: stretch !important; }
   .report-filters > * { width: 100% !important; }
+}.report-table-wrap { overflow-x: auto; }
+.report-thead, .report-row {
+  display: grid;
+  grid-template-columns: 100px 100px 1fr 110px 70px 80px 110px;
+  gap: 12px;
+  align-items: center;
+}
+.report-thead { padding: 10px 20px; background: var(--surface2); border-bottom: 1px solid var(--border); }
+.report-row { padding: 13px 20px; }
+@media (min-width: 701px) {
+  .report-thead, .report-row { min-width: 680px; }
+}
+@media (max-width: 700px) {
+  .report-thead { display: none; }
+  .report-row {
+    grid-template-columns: 1fr 1fr;
+    gap: 6px 12px;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .report-cell { display: flex; flex-direction: column; gap: 2px; }
+  .report-cell::before {
+    content: attr(data-label);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+  .report-cell[data-label="Tenant"] { grid-column: 1 / -1; }
+  .report-cell[data-label="Amount"] { text-align: right; align-items: flex-end; }
 }
 
 /* Reports summary cards stack on small phones */
@@ -457,20 +507,44 @@ const GLOBAL_CSS = `
   .payment-detail-grid { grid-template-columns: 1fr; }
 }
 
+.payment-row { padding: 13px 20px; }
+@media (max-width: 480px) {
+  .payment-row { padding: 12px 14px; }
+  .payment-card-grid { grid-template-columns: 1fr 1fr; gap: 8px; padding: 12px; }
+  .payment-card { min-height: 150px; padding: 12px; }
+  .tbl-payments { grid-template-columns: 1fr 88px; gap: 8px; }
+}
+
 .tenants-toolbar { flex-wrap: wrap; }
 
 /* Payments page: search + status filter toolbar */
-.payments-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 14px 20px; border-bottom: 1px solid var(--border); }
+.payments-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 14px 20px; border-bottom: 1px solid var(--border); background: var(--surface2); }
 .payments-search { position: relative; flex: 1 1 220px; }
-.payments-search input { width: 100%; padding: 8px 12px 8px 32px; border: 1px solid var(--input-border); border-radius: var(--radius-sm); background: var(--input-bg); color: var(--text); font-size: 13px; outline: none; }
-.payments-search svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--text-muted); pointer-events: none; }
-.payments-status-filters { display: flex; gap: 3px; padding: 3px; border-radius: 8px; background: var(--surface2); flex-wrap: wrap; }
-.payments-status-filters button { min-height: 32px; padding: 0 10px; border: 0; border-radius: 6px; background: transparent; color: var(--text-muted); font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
-.payments-status-filters button:hover, .payments-status-filters button.is-active { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+.payments-search input {
+  width: 100%;
+  padding: 10px 14px 10px 36px;
+  border: 1px solid var(--input-border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+  box-shadow: var(--shadow);
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.payments-search input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.payments-search svg { position: absolute; left: 13px; top: 50%; transform: translateY(-50%); color: var(--text-muted); pointer-events: none; }
+.payments-status-filters { display: flex; gap: 4px; padding: 4px; border-radius: 999px; background: var(--surface); box-shadow: var(--shadow); flex-wrap: wrap; }
+.payments-status-filters button { min-height: 32px; padding: 0 12px; border: 0; border-radius: 999px; background: transparent; color: var(--text-muted); font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: background-color .15s ease, color .15s ease; }
+.payments-status-filters button:hover, .payments-status-filters button.is-active { background: var(--accent); color: var(--accent-fg); box-shadow: none; }
 @media (max-width: 640px) {
-  .payments-toolbar { flex-direction: column; align-items: stretch; }
-  .payments-status-filters { justify-content: stretch; }
-  .payments-status-filters button { flex: 1; }
+  .payments-toolbar { flex-direction: column; align-items: stretch; padding: 12px 14px; gap: 10px; }
+  .payments-search input { padding: 11px 14px 11px 38px; font-size: 14px; }
+  .payments-status-filters { justify-content: stretch; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .payments-status-filters button { flex: 1 1 auto; }
 }
 
 /* Settings page responsive layout */
@@ -1122,6 +1196,241 @@ function ReminderWidget({ reminders }: { reminders: ReminderRow[] }) {
   );
 }
 
+function ReminderSummaryWidget({ reminders }: { reminders: ReminderRow[] }) {
+  const navigate = useNavigate();
+
+  const overdue = reminders.filter((r) => r.status === "overdue");
+  const dueSoon = reminders.filter((r) => r.status === "due-soon");
+
+  const overdueAmount = overdue.reduce(
+    (sum, r) => sum + (r.tenant.monthlyRent || 0),
+    0,
+  );
+  const dueSoonAmount = dueSoon.reduce(
+    (sum, r) => sum + (r.tenant.monthlyRent || 0),
+    0,
+  );
+
+  // Worst 3 overdue tenants, most overdue first
+  const topOverdue = [...overdue]
+    .sort((a, b) => b.daysOverdue - a.daysOverdue)
+    .slice(0, 3);
+
+  return (
+    <Card style={{ marginTop: 20 }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "flex-start",
+          justifyContent: "space-between",
+          gap: 16,
+          padding: "20px 24px 16px",
+          borderBottom: "1px solid var(--border)",
+        }}
+      >
+        <div>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              color: "var(--text)",
+            }}
+          >
+            <BellRing size={16} aria-hidden="true" />
+            <h2 style={{ margin: 0, fontSize: 14, fontWeight: 650 }}>
+              Reminder Summary
+            </h2>
+          </div>
+          <p
+            style={{
+              margin: "5px 0 0 24px",
+              color: "var(--text-muted)",
+              fontSize: 12,
+            }}
+          >
+            Overdue exposure at a glance
+          </p>
+        </div>
+        <button
+          type="button"
+          className="reminder-view-all"
+          onClick={() => navigate("/notifications")}
+          aria-label="View all rent reminders"
+        >
+          View All <ArrowRight size={15} aria-hidden="true" />
+        </button>
+      </div>
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr 1fr",
+          gap: 1,
+          backgroundColor: "var(--border)",
+        }}
+      >
+        <div
+          style={{
+            padding: "16px 24px",
+            backgroundColor: "var(--surface)",
+          }}
+        >
+          <div
+            style={{
+              fontSize: 11,
+              fontWeight: 600,
+              letterSpacing: "0.06em",
+              textTransform: "uppercase",
+              color: "var(--status-overdue)",
+              marginBottom: 6,
+            }}
+          >
+            Overdue
+          </div>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+            <span
+              className="mono"
+              style={{ fontSize: 24, fontWeight: 650, color: "var(--text)" }}
+            >
+              {overdue.length}
+            </span>
+            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+              tenant{overdue.length !== 1 ? "s" : ""}
+            </span>
+          </div>
+          {overdueAmount > 0 && (
+            <div
+              className="mono"
+              style={{
+                marginTop: 4,
+                fontSize: 12,
+                color: "var(--text-muted)",
+              }}
+            >
+              {fmtRWF(overdueAmount)} at risk
+            </div>
+          )}
+        </div>
+
+        <div
+          style={{
+            padding: "16px 24px",
+            backgroundColor: "var(--surface)",
+          }}
+        >
+          <div
+            style={{
+              fontSize: 11,
+              fontWeight: 600,
+              letterSpacing: "0.06em",
+              textTransform: "uppercase",
+              color: "var(--status-due)",
+              marginBottom: 6,
+            }}
+          >
+            Due Soon
+          </div>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+            <span
+              className="mono"
+              style={{ fontSize: 24, fontWeight: 650, color: "var(--text)" }}
+            >
+              {dueSoon.length}
+            </span>
+            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+              tenant{dueSoon.length !== 1 ? "s" : ""}
+            </span>
+          </div>
+          {dueSoonAmount > 0 && (
+            <div
+              className="mono"
+              style={{
+                marginTop: 4,
+                fontSize: 12,
+                color: "var(--text-muted)",
+              }}
+            >
+              {fmtRWF(dueSoonAmount)} expected
+            </div>
+          )}
+        </div>
+      </div>
+
+      {topOverdue.length > 0 && (
+        <div style={{ padding: "6px 10px 10px" }}>
+          {topOverdue.map((row) => (
+            <div
+              key={row.tenant.id}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+                padding: "10px 14px",
+                borderRadius: 8,
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  minWidth: 0,
+                }}
+              >
+                <div
+                  className="reminder-avatar is-overdue"
+                  style={{
+                    flex: "0 0 30px",
+                    width: 30,
+                    height: 30,
+                    fontSize: 11,
+                  }}
+                >
+                  {initials(row.tenant.name)}
+                </div>
+                <span
+                  style={{
+                    fontSize: 13,
+                    fontWeight: 500,
+                    color: "var(--text)",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {row.tenant.name}
+                </span>
+              </div>
+              <span
+                style={{
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: "var(--status-overdue)",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {row.daysOverdue}d overdue
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {reminders.length === 0 && (
+        <div className="reminder-empty">
+          <div className="reminder-empty-icon">
+            <BellRing size={20} />
+          </div>
+          <strong>No pending reminders</strong>
+          <span>All tenants are up to date with their rent payments.</span>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function NotificationsPage({
   rooms,
   tenants,
@@ -1440,7 +1749,9 @@ function DashboardPage({
         </Card>
       </div>
 
-      <ReminderWidget reminders={reminders} />
+      {/* <ReminderWidget reminders={reminders} /> */}
+      <ReminderSummaryWidget reminders={reminders} />
+      <DueDatesPanel rooms={rooms} tenants={tenants} payments={payments} />
     </div>
   );
 }
@@ -1521,7 +1832,7 @@ function TenantsPage({
       roomId: form.roomId,
       monthlyRent: parseInt(form.rent),
       dueDay: parseInt(form.dueDay),
-      startDate: "2026-07-19",
+      startDate: new Date().toISOString().slice(0, 10),
     };
     onAddTenant(newTenant, room);
     setForm({
@@ -2235,7 +2546,6 @@ function PaymentList({
               }
             }}
             style={{
-              padding: "13px 20px",
               borderBottom:
                 index < payments.length - 1
                   ? "1px solid var(--border)"
@@ -2333,10 +2643,13 @@ function PaymentsPage({
   ) => void;
   onDeletePayment: (paymentId: string) => void;
 }) {
+  const todayStr = new Date().toISOString().slice(0, 10); // e.g. "2026-07-23"
+  const currentMonthStr = todayStr.slice(0, 7); // e.g. "2026-07"
+
   const [search, setSearch] = useState("");
   const [selectedTenant, setSelectedTenant] = useState<Tenant | null>(null);
   const [months, setMonths] = useState("1");
-  const [periodStart, setPeriodStart] = useState("2026-07");
+  const [periodStart, setPeriodStart] = useState(todayStr); // full date now, defaults to today
   const [showDropdown, setShowDropdown] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [paymentViewMode, setPaymentViewMode] = useState<"list" | "grid">(
@@ -2359,8 +2672,8 @@ function PaymentsPage({
   const [editingPaymentId, setEditingPaymentId] = useState<string | null>(null);
   const [editPaymentForm, setEditPaymentForm] = useState({
     months: "1",
-    periodStart: "2026-07",
-    recordedDate: "2026-07-19",
+    periodStart: todayStr,
+    recordedDate: todayStr,
   });
 
   const matchedTenants =
@@ -2391,7 +2704,7 @@ function PaymentsPage({
       tenantId: selectedTenant.id,
       monthsCovered: numMonths,
       periodStart,
-      recordedDate: "2026-07-19",
+      recordedDate: periodStart,
       amount: total,
       daysOffset: 0,
     };
@@ -2399,7 +2712,7 @@ function PaymentsPage({
     setSearch("");
     setSelectedTenant(null);
     setMonths("1");
-    setPeriodStart("2026-07");
+    setPeriodStart(todayStr);
     setSubmitted(true);
     setTimeout(() => setSubmitted(false), 3000);
   }
@@ -2901,9 +3214,9 @@ function PaymentsPage({
             />
 
             <div>
-              <Label>Period Start (YYYY-MM)</Label>
+              <Label>Payment Day (Day / Month / Year)</Label>
               <input
-                type="month"
+                type="date"
                 value={periodStart}
                 onChange={(e) => setPeriodStart(e.target.value)}
                 style={{
@@ -2964,7 +3277,11 @@ function PaymentsPage({
               </div>
             )}
 
-            <Button type="submit" disabled={!selectedTenant}>
+            <Button
+              type="submit"
+              disabled={!selectedTenant}
+              style={{ width: "100%" }}
+            >
               Confirm Payment
             </Button>
 
@@ -3200,9 +3517,9 @@ function PaymentsPage({
                         required
                       />
                       <div>
-                        <Label>Period Start (YYYY-MM)</Label>
+                        <Label>Period Start (Day / Month / Year)</Label>
                         <input
-                          type="month"
+                          type="date"
                           value={editPaymentForm.periodStart}
                           onChange={(e) =>
                             setEditPaymentForm((f) => ({
@@ -3388,6 +3705,70 @@ function PaymentsPage({
                               {selectedPayment.monthsCovered}
                             </div>
                           </div>
+                          <div
+                            style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              alignItems: "center",
+                              gap: 10,
+                            }}
+                          >
+                            <div
+                              style={{
+                                fontSize: 12,
+                                color: "var(--text-muted)",
+                              }}
+                            >
+                              Months covered
+                            </div>
+                            <div
+                              style={{ fontWeight: 600, color: "var(--text)" }}
+                            >
+                              {selectedPayment.monthsCovered}
+                            </div>
+                          </div>
+                          {paymentTenant &&
+                            (() => {
+                              const due = computeNextDueDate(
+                                paymentTenant,
+                                payments,
+                              );
+                              return (
+                                <div
+                                  style={{
+                                    display: "flex",
+                                    justifyContent: "space-between",
+                                    alignItems: "center",
+                                    gap: 10,
+                                  }}
+                                >
+                                  <div
+                                    style={{
+                                      fontSize: 12,
+                                      color: "var(--text-muted)",
+                                    }}
+                                  >
+                                    Next due date
+                                  </div>
+                                  <div
+                                    style={{
+                                      fontWeight: 600,
+                                      color: due.isOverdue
+                                        ? "var(--status-overdue)"
+                                        : "var(--text)",
+                                      textAlign: "right",
+                                    }}
+                                  >
+                                    {formatDateReadable(due.nextDueDate)}
+                                    <div
+                                      style={{ fontSize: 11, fontWeight: 500 }}
+                                    >
+                                      {formatDaysLabel(due.daysUntilDue)}
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })()}
                         </div>
 
                         <div
@@ -3577,7 +3958,9 @@ function ReportsPage({
   function generate() {
     let filtered = [...payments];
     if (tab === "monthly") {
-      filtered = payments.filter((p) => p.periodStart === month);
+      filtered = payments.filter(
+        (p) => periodMonthKey(p.periodStart) === month,
+      );
     } else if (tab === "annual") {
       filtered = payments.filter((p) => p.periodStart.startsWith(year));
     } else if (tab === "custom") {
@@ -3822,18 +4205,8 @@ function ReportsPage({
           </div>
 
           <Card>
-            <div style={{ overflowX: "auto" }}>
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "100px 100px 1fr 110px 70px 80px 110px",
-                  gap: 12,
-                  padding: "10px 20px",
-                  backgroundColor: "var(--surface2)",
-                  borderBottom: "1px solid var(--border)",
-                  minWidth: "680px",
-                }}
-              >
+            <div className="report-table-wrap">
+              <div className="report-thead">
                 {[
                   "Building",
                   "Room",
@@ -3883,90 +4256,123 @@ function ReportsPage({
                     day: "numeric",
                   });
                   return (
+                    // <divtutangire
+                    //   key={p.id}
+                    //   className="table-row"
+                    //   style={{
+                    //     display: "grid",
+                    //     gridTemplateColumns:
+                    //       "100px 100px 1fr 110px 70px 80px 110px",
+                    //     gap: 12,
+                    //     padding: "13px 20px",
+                    //     alignItems: "center",
+                    //     borderBottom:
+                    //       i < results.length - 1
+                    //         ? "1px solid var(--border)"
+                    //         : "none",
+                    //     minWidth: "680px",
+                    //   }}
+                    // >
+                    //   <div
+                    //     style={{
+                    //       fontSize: 13,
+                    //       color: "var(--text-muted)",
+                    //       overflow: "hidden",
+                    //       textOverflow: "ellipsis",
+                    //       whiteSpace: "nowrap",
+                    //     }}
+                    //     title={buildingName}
+                    //   >
+                    //     {buildingName}
+                    //   </div>
+                    //   <div
+                    //     style={{
+                    //       fontSize: 13,
+                    //       color: "var(--text-muted)",
+                    //       overflow: "hidden",
+                    //       textOverflow: "ellipsis",
+                    //       whiteSpace: "nowrap",
+                    //     }}
+                    //     title={roomLabel}
+                    //   >
+                    //     {roomLabel}
+                    //   </div>
+                    //   <div
+                    //     style={{
+                    //       fontWeight: 500,
+                    //       color: "var(--text)",
+                    //       fontSize: 13,
+                    //       overflow: "hidden",
+                    //       textOverflow: "ellipsis",
+                    //       whiteSpace: "nowrap",
+                    //     }}
+                    //     title={t?.name ?? "—"}
+                    //   >
+                    //     {t?.name ?? "—"}
+                    //   </div>
+                    //   <div
+                    //     style={{
+                    //       fontSize: 13,
+                    //       color: "var(--text-muted)",
+                    //     }}
+                    //   >
+                    //     {paymentDateFormatted}
+                    //   </div>
+                    //   <div
+                    //     className="mono"
+                    //     style={{ fontSize: 13, color: "var(--text-muted)" }}
+                    //   >
+                    //     {p.monthsCovered} mo
+                    //   </div>
+                    //   <div>
+                    //     <PaymentTagBadge daysOffset={p.daysOffset} />
+                    //   </div>
+                    //   <div
+                    //     className="mono"
+                    //     style={{
+                    //       fontSize: 13,
+                    //       fontWeight: 500,
+                    //       color: "var(--text)",
+                    //       textAlign: "right",
+                    //       whiteSpace: "nowrap",
+                    //     }}
+                    //   >
+                    //     {fmtRWF(p.amount)}
+                    //   </div>
+                    // </div>
                     <div
                       key={p.id}
-                      className="table-row"
+                      className="table-row report-row"
                       style={{
-                        display: "grid",
-                        gridTemplateColumns:
-                          "100px 100px 1fr 110px 70px 80px 110px",
-                        gap: 12,
-                        padding: "13px 20px",
-                        alignItems: "center",
                         borderBottom:
                           i < results.length - 1
                             ? "1px solid var(--border)"
                             : "none",
-                        minWidth: "680px",
                       }}
                     >
-                      <div
-                        style={{
-                          fontSize: 13,
-                          color: "var(--text-muted)",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                        }}
-                        title={buildingName}
-                      >
+                      <div className="report-cell" data-label="Building" style={{ fontSize: 13, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={buildingName}>
                         {buildingName}
                       </div>
-                      <div
-                        style={{
-                          fontSize: 13,
-                          color: "var(--text-muted)",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                        }}
-                        title={roomLabel}
-                      >
+                      <div className="report-cell" data-label="Room" style={{ fontSize: 13, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={roomLabel}>
                         {roomLabel}
                       </div>
-                      <div
-                        style={{
-                          fontWeight: 500,
-                          color: "var(--text)",
-                          fontSize: 13,
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                        }}
-                        title={t?.name ?? "—"}
-                      >
+                      <div className="report-cell" data-label="Tenant" style={{ fontWeight: 500, color: "var(--text)", fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={t?.name ?? "—"}>
                         {t?.name ?? "—"}
                       </div>
-                      <div
-                        style={{
-                          fontSize: 13,
-                          color: "var(--text-muted)",
-                        }}
-                      >
+                      <div className="report-cell" data-label="Payment Date" style={{ fontSize: 13, color: "var(--text-muted)" }}>
                         {paymentDateFormatted}
                       </div>
-                      <div
-                        className="mono"
-                        style={{ fontSize: 13, color: "var(--text-muted)" }}
-                      >
+                      <div className="report-cell mono" data-label="Months" style={{ fontSize: 13, color: "var(--text-muted)" }}>
                         {p.monthsCovered} mo
                       </div>
-                      <div>
+                      <div className="report-cell" data-label="Status">
                         <PaymentTagBadge daysOffset={p.daysOffset} />
                       </div>
-                      <div
-                        className="mono"
-                        style={{
-                          fontSize: 13,
-                          fontWeight: 500,
-                          color: "var(--text)",
-                          textAlign: "right",
-                          whiteSpace: "nowrap",
-                        }}
-                      >
+                      <div className="report-cell mono" data-label="Amount" style={{ fontSize: 13, fontWeight: 500, color: "var(--text)", textAlign: "right", whiteSpace: "nowrap" }}>
                         {fmtRWF(p.amount)}
                       </div>
                     </div>
+                    
                   );
                 })
               )}
