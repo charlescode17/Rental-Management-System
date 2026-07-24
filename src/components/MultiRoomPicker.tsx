@@ -50,11 +50,12 @@ export default function MultiRoomPicker({
         Rooms (select one or more to merge)
       </div>
       <div
+        className="multi-room-picker-list"
         style={{
           display: "flex",
           flexDirection: "column",
           gap: 4,
-          maxHeight: 90,
+          maxHeight: 240,
           overflowY: "auto",
           border: "1px solid var(--border)",
           borderRadius: "var(--radius-sm)",

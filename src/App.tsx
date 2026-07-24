@@ -143,6 +143,23 @@ function tenantRoomsList(
     .map((id) => rooms.find((r) => r.id === id))
     .filter(Boolean) as Room[];
 }
+function tenantRoomsLabel(
+  tenant: (Tenant & { extraRoomIds?: string[] }) | null | undefined,
+  rooms: Room[],
+): string {
+  const list = tenantRoomsList(tenant, rooms);
+  if (list.length === 0) return "—";
+  return list.map((r) => `${floorLabel(r.floor)} · ${r.number}`).join(", ");
+}
+
+function tenantBuildingsLabel(
+  tenant: (Tenant & { extraRoomIds?: string[] }) | null | undefined,
+  rooms: Room[],
+): string {
+  const list = tenantRoomsList(tenant, rooms);
+  const names = Array.from(new Set(list.map((r) => r.buildingName).filter(Boolean)));
+  return names.length ? names.join(", ") : "—";
+}
 
 // The month the dashboard treats as "now". Every "this month" calculation
 // below (paid status, collected total, payments-recorded count) is driven
@@ -400,7 +417,7 @@ const GLOBAL_CSS = `
   .room-list-actions { grid-column: 1 / -1; justify-content: flex-start; border-top: 1px solid var(--border); padding-top: 8px; }
 }
 
-.tenant-card { transition: transform 0.15s ease, box-shadow 0.15s ease; }
+.tenant-card { transition: transform 0.15s ease, box-shadow 0.15s ease; min-height: 172px; display: flex; flex-direction: column; }
 .tenant-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md, 0 8px 22px rgba(0,0,0,0.08)); }
 @media (max-width: 420px) {
   .tenant-card-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)) !important; gap: 8px !important; }
@@ -486,6 +503,13 @@ const GLOBAL_CSS = `
   font-size: 11px;
   color: var(--text-muted);
   white-space: nowrap;
+}
+.multi-room-picker-list {
+  max-height: 260px;
+  overflow-y: auto;
+  padding-right: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
 }
 @media (max-width: 640px) {
   .tbl-tenants { grid-template-columns: 1fr 100px 56px; }
@@ -1697,9 +1721,10 @@ function DashboardPage({
   const occupiedRoomIds = useMemo(() => {
     const validRoomIds = new Set(uniqueRooms.map((r) => r.id));
     const occupiedIds = new Set<string>();
-    for (const t of tenants) {
-      if (t.roomId && validRoomIds.has(t.roomId)) {
-        occupiedIds.add(t.roomId);
+    for (const t of tenants as (Tenant & { extraRoomIds?: string[] })[]) {
+      const ids = [t.roomId, ...(t.extraRoomIds ?? [])];
+      for (const id of ids) {
+        if (id && validRoomIds.has(id)) occupiedIds.add(id);
       }
     }
     return occupiedIds;
@@ -1894,6 +1919,8 @@ function TenantsPage({
   }
   const [submitted, setSubmitted] = useState(false);
   const [viewMode, setViewMode] = useState<"list" | "grid">("list");
+  const [roomsModalTenant, setRoomsModalTenant] =
+    useState<TenantWithTin | null>(null);
   const [query, setQuery] = useState("");
 
   const [editingTenantId, setEditingTenantId] = useState<string | null>(null);
@@ -2247,11 +2274,28 @@ function TenantsPage({
                       className="tenant-rooms-list"
                       style={{ marginBottom: 4 }}
                     >
-                      {tenantRooms.map((r) => (
+                      {tenantRooms.slice(0, 2).map((r) => (
                         <span key={r.id} className="tenant-room-chip">
                           {floorLabel(r.floor)} · {r.number}
                         </span>
                       ))}
+                      {tenantRooms.length > 2 && (
+                        <button
+                          type="button"
+                          className="tenant-room-chip"
+                          style={{
+                            cursor: "pointer",
+                            fontWeight: 600,
+                            color: "var(--accent)",
+                          }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setRoomsModalTenant(t);
+                          }}
+                        >
+                          +{tenantRooms.length - 2} more
+                        </button>
+                      )}
                     </div>
                     <div
                       className="mono"
@@ -2366,11 +2410,30 @@ function TenantsPage({
                           —
                         </span>
                       ) : (
-                        tenantRooms.map((r) => (
-                          <span key={r.id} className="tenant-room-chip">
-                            {floorLabel(r.floor)} · {r.number}
-                          </span>
-                        ))
+                        <>
+                          {tenantRooms.slice(0, 2).map((r) => (
+                            <span key={r.id} className="tenant-room-chip">
+                              {floorLabel(r.floor)} · {r.number}
+                            </span>
+                          ))}
+                          {tenantRooms.length > 2 && (
+                            <button
+                              type="button"
+                              className="tenant-room-chip"
+                              style={{
+                                cursor: "pointer",
+                                fontWeight: 600,
+                                color: "var(--accent)",
+                              }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setRoomsModalTenant(t);
+                              }}
+                            >
+                              +{tenantRooms.length - 2} more
+                            </button>
+                          )}
+                        </>
                       )}
                     </div>
                     <div
@@ -2539,7 +2602,65 @@ function TenantsPage({
           </form>
         </Card>
       </div>
-
+      {roomsModalTenant && (
+        <div
+          onClick={() => setRoomsModalTenant(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            backgroundColor: "rgba(15,23,42,0.35)",
+            zIndex: 140,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 20,
+          }}
+        >
+          <Card
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "min(360px, 100%)",
+              padding: 20,
+              maxHeight: "calc(100vh - 40px)",
+              overflowY: "auto",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: 14,
+              }}
+            >
+              <div
+                style={{ fontWeight: 700, fontSize: 16, color: "var(--text)" }}
+              >
+                {roomsModalTenant.name}'s Rooms
+              </div>
+              <button
+                onClick={() => setRoomsModalTenant(null)}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  cursor: "pointer",
+                  color: "var(--text-muted)",
+                }}
+                aria-label="Close"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="tenant-rooms-list">
+              {tenantRoomsList(roomsModalTenant, rooms).map((r) => (
+                <span key={r.id} className="tenant-room-chip">
+                  {floorLabel(r.floor)} · {r.number}
+                </span>
+              ))}
+            </div>
+          </Card>
+        </div>
+      )}
       {/* Edit tenant modal */}
       {editingTenantId && (
         <div
@@ -3978,10 +4099,9 @@ function ReportsPage({
   function buildReportRows() {
     return results.map((p) => {
       const t = tenants.find((tt) => tt.id === p.tenantId);
-      const r = t ? rooms.find((rr) => rr.id === t.roomId) : null;
       const tenantName = t?.name ?? "—";
-      const buildingName = r?.buildingName ?? "—";
-      const roomLabel = r ? `${r.floor} · ${r.number}` : "—";
+      const buildingName = tenantBuildingsLabel(t, rooms);
+      const roomLabel = tenantRoomsLabel(t, rooms);
       const paymentDate = new Date(p.recordedDate).toLocaleDateString("en-US", {
         year: "numeric",
         month: "short",
@@ -4368,9 +4488,8 @@ function ReportsPage({
               ) : (
                 results.map((p, i) => {
                   const t = tenants.find((t) => t.id === p.tenantId);
-                  const r = t ? rooms.find((rm) => rm.id === t.roomId) : null;
-                  const buildingName = r?.buildingName ?? "—";
-                  const roomLabel = r ? `${r.floor} · ${r.number}` : "—";
+                  const buildingName = tenantBuildingsLabel(t, rooms);
+                  const roomLabel = tenantRoomsLabel(t, rooms);
                   const paymentDateFormatted = new Date(
                     p.recordedDate,
                   ).toLocaleDateString("en-US", {
