@@ -3009,6 +3009,8 @@ function PaymentsPage({
     setSelectedTenant(t);
     setSearch(t.name);
     setShowDropdown(false);
+    const due = computeNextDueDate(t, payments);
+    setPeriodStart(due.nextDueDate);
   }
 
   function handleSubmit(e: React.FormEvent) {
@@ -3019,7 +3021,7 @@ function PaymentsPage({
       tenantId: selectedTenant.id,
       monthsCovered: numMonths,
       periodStart,
-      recordedDate: periodStart,
+      recordedDate: todayStr,
       amount: total,
       daysOffset: 0,
     };
