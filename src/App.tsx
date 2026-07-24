@@ -42,6 +42,8 @@ import {
   Share,
 } from "lucide-react";
 import WelcomePage from "./WelcomePage";
+import BulkAddRooms from "./components/BulkAddRooms";
+import MultiRoomPicker from "./components/MultiRoomPicker";
 import UserMenu from "./UserMenu";
 import type { Room, Tenant, Payment, PaymentTag } from "./data";
 
@@ -130,6 +132,16 @@ function roomLocationCompact(
   const displayName =
     compactName.length > 18 ? `${compactName.slice(0, 16)}…` : compactName;
   return `${displayName} · ${floorAndRoom}`;
+}
+function tenantRoomsList(
+  tenant: (Tenant & { extraRoomIds?: string[] }) | null | undefined,
+  rooms: Room[],
+): Room[] {
+  if (!tenant) return [];
+  const ids = [tenant.roomId, ...(tenant.extraRoomIds ?? [])];
+  return ids
+    .map((id) => rooms.find((r) => r.id === id))
+    .filter(Boolean) as Room[];
 }
 
 // The month the dashboard treats as "now". Every "this month" calculation
@@ -262,8 +274,17 @@ function uniqueId() {
   return Math.random().toString(36).slice(2);
 }
 
-function getTenantForRoom(roomId: string, tenants: Tenant[]) {
-  return tenants.find((tenant) => tenant.roomId === roomId) ?? null;
+function getTenantForRoom(
+  roomId: string,
+  tenants: Array<Tenant & { extraRoomIds?: string[] }>,
+) {
+  return (
+    tenants.find(
+      (tenant) =>
+        tenant.roomId === roomId ||
+        (tenant.extraRoomIds && tenant.extraRoomIds.includes(roomId)),
+    ) ?? null
+  );
 }
 
 function floorLabel(floor: string): string {
@@ -450,13 +471,25 @@ const GLOBAL_CSS = `
 /* Tenants list: fully responsive columns, no forced horizontal scroll */
 .tbl-tenants {
   display: grid;
-  grid-template-columns: 1fr 90px 90px 100px 56px;
+  grid-template-columns: 1fr minmax(140px, 1.3fr) 100px 56px;
   gap: 12px;
   align-items: center;
 }
+.tenant-rooms-list { display: flex; flex-wrap: wrap; gap: 4px; }
+.tenant-room-chip {
+  display: inline-flex;
+  align-items: center;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
 @media (max-width: 640px) {
   .tbl-tenants { grid-template-columns: 1fr 100px 56px; }
-  .tenant-col-floor, .tenant-col-room { display: none; }
+  .tenant-col-rooms { display: none; }
 }
 
 /* Payments recent list: fully responsive columns, no forced horizontal scroll */
@@ -473,7 +506,8 @@ const GLOBAL_CSS = `
 .payment-table-header { padding: 10px 20px; background: var(--surface2); border-bottom: 1px solid var(--border); color: var(--text-muted); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
 .payment-row { cursor: pointer; }
 .payment-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.payment-tenant-name { color: var(--text); font-size: 13px; font-weight: 500; }
+.payment-row { padding: 13px 20px; }
+.payment-tenant-name { color: var(--text); font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .payment-tenant-meta { margin-top: 1px; overflow: hidden; color: var(--text-muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .payment-muted-cell { color: var(--text-muted); font-size: 13px; }
 .payment-amount { color: var(--text); font-size: 13px; font-weight: 500; }
@@ -499,23 +533,61 @@ const GLOBAL_CSS = `
 .payment-detail-grid > div { display: flex; flex-direction: column; gap: 3px; padding: 11px 12px; border-radius: var(--radius-sm); background: var(--surface2); }
 .payment-detail-grid span { color: var(--text-muted); font-size: 11px; }
 .payment-detail-grid strong { color: var(--text); font-size: 12px; font-weight: 600; }
+/* Payments list now mirrors the Reports table: full columns on desktop,
+   a clean stacked card (with data-label captions) on small screens —
+   no hidden columns, no forced horizontal scroll, ever. */
+.tbl-payments {
+  display: grid;
+  grid-template-columns: 96px 100px minmax(0, 1.3fr) 110px 64px 84px 110px;
+  gap: 12px;
+  align-items: center;
+}
+.tbl-payments > .payment-cell { min-width: 0; }
+@media (min-width: 641px) {
+  .payment-table-wrap { overflow-x: auto; }
+  .tbl-payments { min-width: 640px; }
+}
 @media (max-width: 640px) {
-  .tbl-payments { grid-template-columns: 1fr 100px; }
-  .payment-col-months, .payment-col-tag { display: none; }
+  .payment-table-header { display: none; }
+  .tbl-payments {
+    grid-template-columns: 1fr 1fr;
+    gap: 6px 12px;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .payment-cell { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .payment-cell::before {
+    content: attr(data-label);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+  .payment-cell[data-label="Tenant"] { grid-column: 1 / -1; }
+  .payment-cell[data-label="Amount"] { text-align: right; align-items: flex-end; }
   .payment-header-actions { gap: 8px; }
   .payment-header-actions > .mono { display: none; }
   .payment-detail-grid { grid-template-columns: 1fr; }
 }
 
-.payment-row { padding: 13px 20px; }
 @media (max-width: 480px) {
-  .payment-row { padding: 12px 14px; }
   .payment-card-grid { grid-template-columns: 1fr 1fr; gap: 8px; padding: 12px; }
   .payment-card { min-height: 150px; padding: 12px; }
-  .tbl-payments { grid-template-columns: 1fr 88px; gap: 8px; }
+  .tbl-payments { padding: 12px 14px; }
 }
 
 .tenants-toolbar { flex-wrap: wrap; }
+
+/* Record-a-Payment form card: comfortable on phones, not just desktop */
+@media (max-width: 640px) {
+  .payment-form-card { padding: 16px !important; border-radius: 12px !important; }
+  .payment-form-card input, .payment-form-card select { font-size: 15px !important; padding: 10px 12px !important; }
+  .payment-form-card input[type="search"] { padding-left: 34px !important; }
+}
+@media (max-width: 400px) {
+  .payment-form-card { padding: 14px !important; }
+}
 
 /* Payments page: search + status filter toolbar */
 .payments-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 14px 20px; border-bottom: 1px solid var(--border); background: var(--surface2); }
@@ -540,11 +612,43 @@ const GLOBAL_CSS = `
 .payments-status-filters { display: flex; gap: 4px; padding: 4px; border-radius: 999px; background: var(--surface); box-shadow: var(--shadow); flex-wrap: wrap; }
 .payments-status-filters button { min-height: 32px; padding: 0 12px; border: 0; border-radius: 999px; background: transparent; color: var(--text-muted); font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; transition: background-color .15s ease, color .15s ease; }
 .payments-status-filters button:hover, .payments-status-filters button.is-active { background: var(--accent); color: var(--accent-fg); box-shadow: none; }
+.payments-sort { display: flex; align-items: center; gap: 6px; flex: 0 1 178px; }
+.payments-sort select {
+  width: 100%;
+  padding: 8px 30px 8px 12px;
+  border: 1px solid var(--input-border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  outline: none;
+  cursor: pointer;
+  box-shadow: var(--shadow);
+  appearance: none;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.payments-sort select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+.payments-sort-wrap { position: relative; width: 100%; }
+.payments-sort-wrap svg {
+  position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+  color: var(--text-muted); pointer-events: none;
+}
 @media (max-width: 640px) {
-  .payments-toolbar { flex-direction: column; align-items: stretch; padding: 12px 14px; gap: 10px; }
-  .payments-search input { padding: 11px 14px 11px 38px; font-size: 14px; }
-  .payments-status-filters { justify-content: stretch; overflow-x: auto; -webkit-overflow-scrolling: touch; }
-  .payments-status-filters button { flex: 1 1 auto; }
+  .payments-toolbar { flex-direction: column; align-items: stretch; padding: 10px 12px; gap: 8px; }
+  .payments-search { flex-basis: auto; }
+  .payments-search input { padding: 9px 12px 9px 34px; font-size: 13px; border-radius: 10px; }
+  .payments-search svg { left: 11px; width: 13px; height: 13px; }
+  .payments-status-filters { justify-content: stretch; overflow-x: auto; -webkit-overflow-scrolling: touch; padding: 3px; border-radius: 8px; }
+  .payments-status-filters button { flex: 1 1 auto; min-height: 28px; padding: 0 8px; font-size: 11px; border-radius: 6px; }
+  .payments-sort { flex-basis: auto; width: 100%; }
+}
+@media (max-width: 400px) {
+  .payments-search input { font-size: 12px; padding: 8px 10px 8px 30px; }
+  .payments-status-filters button { font-size: 10px; padding: 0 6px; }
 }
 
 /* Settings page responsive layout */
@@ -1767,7 +1871,7 @@ function TenantsPage({
 }: {
   rooms: Room[];
   tenants: TenantWithTin[];
-  onAddTenant: (t: TenantWithTin, r: Room) => void;
+  onAddTenant: (t: TenantWithTin, rs: Room[]) => void;
   onUpdateTenant: (t: TenantWithTin) => void;
   onDeleteTenant: (tenantId: string) => void;
 }) {
@@ -1782,6 +1886,12 @@ function TenantsPage({
     rent: "",
     dueDay: "5",
   });
+  const [selectedRoomIds, setSelectedRoomIds] = useState<string[]>([]);
+  function toggleRoom(roomId: string) {
+    setSelectedRoomIds((ids) =>
+      ids.includes(roomId) ? ids.filter((id) => id !== roomId) : [...ids, roomId],
+    );
+  }
   const [submitted, setSubmitted] = useState(false);
   const [viewMode, setViewMode] = useState<"list" | "grid">("list");
   const [query, setQuery] = useState("");
@@ -1795,6 +1905,14 @@ function TenantsPage({
     rent: "",
     dueDay: "5",
   });
+  const [editSelectedRoomIds, setEditSelectedRoomIds] = useState<string[]>([]);
+  function toggleEditRoom(roomId: string) {
+    setEditSelectedRoomIds((ids) =>
+      ids.includes(roomId)
+        ? ids.filter((id) => id !== roomId)
+        : [...ids, roomId],
+    );
+  }
 
   useEffect(() => {
     let mounted = true;
@@ -1815,26 +1933,33 @@ function TenantsPage({
   const selectedRoom = rooms.find((r) => r.id === form.roomId);
 
   useEffect(() => {
-    if (selectedRoom) {
-      setForm((f) => ({ ...f, rent: String(selectedRoom.baseRent) }));
+    const total = selectedRoomIds.reduce(
+      (sum, id) => sum + (rooms.find((r) => r.id === id)?.baseRent ?? 0),
+      0,
+    );
+    if (selectedRoomIds.length > 0) {
+      setForm((f) => ({ ...f, roomId: selectedRoomIds[0], rent: String(total) }));
     }
-  }, [form.roomId]);
+  }, [selectedRoomIds]);
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!form.roomId || !form.name.trim() || !form.rent || !form.dueDay) return;
-    const room = rooms.find((r) => r.id === form.roomId)!;
+    if (selectedRoomIds.length === 0 || !form.name.trim() || !form.rent || !form.dueDay) return;
+    const roomsUsed = selectedRoomIds
+      .map((id) => rooms.find((r) => r.id === id))
+      .filter(Boolean) as Room[];
     const newTenant: TenantWithTin = {
       id: "t" + uniqueId(),
       name: form.name.trim(),
       phone: form.phone.trim() || undefined,
       tinNumber: form.tinNumber.trim() || undefined,
-      roomId: form.roomId,
+      roomId: selectedRoomIds[0],
+      extraRoomIds: selectedRoomIds.slice(1),
       monthlyRent: parseInt(form.rent),
       dueDay: parseInt(form.dueDay),
       startDate: new Date().toISOString().slice(0, 10),
     };
-    onAddTenant(newTenant, room);
+    onAddTenant(newTenant, roomsUsed);
     setForm({
       roomId: "",
       name: "",
@@ -1843,11 +1968,12 @@ function TenantsPage({
       rent: "",
       dueDay: "5",
     });
+    setSelectedRoomIds([]);
     setSubmitted(true);
     setTimeout(() => setSubmitted(false), 3000);
   }
 
-  function startEdit(t: TenantWithTin) {
+  function startEdit(t: TenantWithTin & { extraRoomIds?: string[] }) {
     setEditingTenantId(t.id);
     setEditingTenant({
       roomId: t.roomId,
@@ -1857,11 +1983,28 @@ function TenantsPage({
       rent: String(t.monthlyRent),
       dueDay: String(t.dueDay),
     });
+    setEditSelectedRoomIds(
+      [t.roomId, ...(t.extraRoomIds ?? [])].filter(Boolean),
+    );
   }
+  useEffect(() => {
+    if (!editingTenantId) return;
+    const total = editSelectedRoomIds.reduce(
+      (sum, id) => sum + (rooms.find((r) => r.id === id)?.baseRent ?? 0),
+      0,
+    );
+    if (editSelectedRoomIds.length > 0) {
+      setEditingTenant((t) => ({
+        ...t,
+        roomId: editSelectedRoomIds[0],
+        rent: String(total),
+      }));
+    }
+  }, [editSelectedRoomIds]);
 
   function submitEdit(e: React.FormEvent) {
     e.preventDefault();
-    if (!editingTenantId) return;
+    if (!editingTenantId || editSelectedRoomIds.length === 0) return;
     const existing = tenants.find((t) => t.id === editingTenantId);
     if (!existing) return;
     onUpdateTenant({
@@ -1869,7 +2012,8 @@ function TenantsPage({
       name: editingTenant.name.trim(),
       phone: editingTenant.phone.trim() || undefined,
       tinNumber: editingTenant.tinNumber.trim() || undefined,
-      roomId: editingTenant.roomId,
+      roomId: editSelectedRoomIds[0],
+      extraRoomIds: editSelectedRoomIds.slice(1),
       monthlyRent: parseInt(editingTenant.rent) || existing.monthlyRent,
       dueDay: parseInt(editingTenant.dueDay) || existing.dueDay,
     });
@@ -1888,7 +2032,8 @@ function TenantsPage({
 
   const editableRooms = rooms.filter(
     (room) =>
-      !getTenantForRoom(room.id, tenants) || room.id === editingTenant.roomId,
+      !getTenantForRoom(room.id, tenants) ||
+      editSelectedRoomIds.includes(room.id),
   );
 
   return (
@@ -2030,7 +2175,8 @@ function TenantsPage({
               }}
             >
               {filteredTenants.map((t) => {
-                const room = rooms.find((r) => r.id === t.roomId);
+                const tenantRooms = tenantRoomsList(t, rooms);
+                const room = tenantRooms[0];
                 return (
                   <div
                     key={t.id}
@@ -2098,13 +2244,14 @@ function TenantsPage({
                       </div>
                     )}
                     <div
-                      style={{
-                        fontSize: 12,
-                        color: "var(--text-muted)",
-                        marginBottom: 4,
-                      }}
+                      className="tenant-rooms-list"
+                      style={{ marginBottom: 4 }}
                     >
-                      {roomLocation(room, buildings)}
+                      {tenantRooms.map((r) => (
+                        <span key={r.id} className="tenant-room-chip">
+                          {floorLabel(r.floor)} · {r.number}
+                        </span>
+                      ))}
                     </div>
                     <div
                       className="mono"
@@ -2151,7 +2298,7 @@ function TenantsPage({
                   Name
                 </div>
                 <div
-                  className="tenant-col-floor"
+                  className="tenant-col-rooms"
                   style={{
                     fontSize: 11,
                     fontWeight: 600,
@@ -2160,19 +2307,7 @@ function TenantsPage({
                     color: "var(--text-muted)",
                   }}
                 >
-                  Floor
-                </div>
-                <div
-                  className="tenant-col-room"
-                  style={{
-                    fontSize: 11,
-                    fontWeight: 600,
-                    letterSpacing: "0.06em",
-                    textTransform: "uppercase",
-                    color: "var(--text-muted)",
-                  }}
-                >
-                  Room
+                  Rooms
                 </div>
                 <div
                   style={{
@@ -2188,7 +2323,8 @@ function TenantsPage({
                 <div />
               </div>
               {filteredTenants.map((t, i) => {
-                const room = rooms.find((r) => r.id === t.roomId);
+                const tenantRooms = tenantRoomsList(t, rooms);
+                const primaryRoom = tenantRooms[0];
                 return (
                   <div
                     key={t.id}
@@ -2219,20 +2355,23 @@ function TenantsPage({
                         }}
                       >
                         {t.phone ? `${t.phone} · ` : ""}
-                        {roomLocation(room, buildings)}
+                        {roomLocation(primaryRoom, buildings)}
                       </div>
                     </div>
-                    <div
-                      className="tenant-col-floor"
-                      style={{ fontSize: 13, color: "var(--text-muted)" }}
-                    >
-                      {room ? floorLabel(room.floor) : "—"}
-                    </div>
-                    <div
-                      className="tenant-col-room"
-                      style={{ fontSize: 13, color: "var(--text-muted)" }}
-                    >
-                      {room?.number ?? "—"}
+                    <div className="tenant-col-rooms tenant-rooms-list">
+                      {tenantRooms.length === 0 ? (
+                        <span
+                          style={{ fontSize: 13, color: "var(--text-muted)" }}
+                        >
+                          —
+                        </span>
+                      ) : (
+                        tenantRooms.map((r) => (
+                          <span key={r.id} className="tenant-room-chip">
+                            {floorLabel(r.floor)} · {r.number}
+                          </span>
+                        ))
+                      )}
                     </div>
                     <div
                       className="mono"
@@ -2305,21 +2444,12 @@ function TenantsPage({
             onSubmit={handleSubmit}
             style={{ display: "flex", flexDirection: "column", gap: 16 }}
           >
-            <Select
-              label="Vacant Room"
-              value={form.roomId}
-              onChange={(e) =>
-                setForm((f) => ({ ...f, roomId: e.target.value }))
-              }
-              required
-            >
-              <option value="">Select a room…</option>
-              {vacantRooms.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {roomLocationCompact(r, buildings)} — {fmtRWF(r.baseRent)}/mo
-                </option>
-              ))}
-            </Select>
+            <MultiRoomPicker
+              vacantRooms={vacantRooms}
+              selectedRoomIds={selectedRoomIds}
+              onToggle={toggleRoom}
+              buildings={buildings}
+            />
 
             <Input
               label="Full Name"
@@ -2328,42 +2458,62 @@ function TenantsPage({
               onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
               required
             />
-            <Input
-              label="Phone (optional)"
-              placeholder="+250 7XX XXX XXX"
-              value={form.phone}
-              onChange={(e) =>
-                setForm((f) => ({ ...f, phone: e.target.value }))
-              }
-            />
-            <Input
-              label="TIN Number (optional)"
-              placeholder="e.g. 123456789"
-              value={form.tinNumber}
-              onChange={(e) =>
-                setForm((f) => ({ ...f, tinNumber: e.target.value }))
-              }
-            />
-            <Input
-              label="Monthly Rent (RWF)"
-              type="number"
-              placeholder="e.g. 70000"
-              value={form.rent}
-              onChange={(e) => setForm((f) => ({ ...f, rent: e.target.value }))}
-              required
-            />
-            <Input
-              label="Due Day of Month (1–31)"
-              type="number"
-              min={1}
-              max={31}
-              placeholder="e.g. 5"
-              value={form.dueDay}
-              onChange={(e) =>
-                setForm((f) => ({ ...f, dueDay: e.target.value }))
-              }
-              required
-            />
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 12,
+              }}
+            >
+              <Input
+                label="Phone (optional)"
+                placeholder="+250 7XX XXX XXX"
+                value={form.phone}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, phone: e.target.value }))
+                }
+              />
+              <Input
+                label="TIN Number"
+                placeholder="e.g. 123456789"
+                value={form.tinNumber}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, tinNumber: e.target.value }))
+                }
+              />
+            </div>
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 12,
+              }}
+            >
+              <Input
+                label="Monthly Rent (RWF)"
+                type="number"
+                placeholder="e.g. 70000"
+                value={form.rent}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, rent: e.target.value }))
+                }
+                required
+              />
+              <Input
+                label="Due Day (1–31)"
+                type="number"
+                min={1}
+                max={31}
+                placeholder="e.g. 5"
+                value={form.dueDay}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, dueDay: e.target.value }))
+                }
+                required
+              />
+            </div>
 
             <Button type="submit" style={{ marginTop: 4 }}>
               Register Tenant
@@ -2428,21 +2578,12 @@ function TenantsPage({
               onSubmit={submitEdit}
               style={{ display: "flex", flexDirection: "column", gap: 14 }}
             >
-              <Select
-                label="Room"
-                value={editingTenant.roomId}
-                onChange={(e) =>
-                  setEditingTenant((t) => ({ ...t, roomId: e.target.value }))
-                }
-                required
-              >
-                {editableRooms.map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {roomLocationCompact(r, buildings)} — {fmtRWF(r.baseRent)}
-                    /mo
-                  </option>
-                ))}
-              </Select>
+              <MultiRoomPicker
+                vacantRooms={editableRooms}
+                selectedRoomIds={editSelectedRoomIds}
+                onToggle={toggleEditRoom}
+                buildings={buildings}
+              />
               <Input
                 label="Full Name"
                 value={editingTenant.name}
@@ -2522,10 +2663,23 @@ function PaymentList({
   return (
     <div className="payment-table-wrap">
       <div className="tbl-payments payment-table-header">
-        <div>Tenant</div>
-        <div className="payment-col-months">Months</div>
-        <div className="payment-col-tag">Tag</div>
-        <div>Amount</div>
+        {["Floor", "Room", "Tenant", "Date", "Mo.", "Status", "Amount"].map(
+          (h) => (
+            <div
+              key={h}
+              style={{
+                fontSize: 11,
+                fontWeight: 600,
+                letterSpacing: "0.06em",
+                textTransform: "uppercase",
+                color: "var(--text-muted)",
+                textAlign: h === "Amount" ? "right" : "left",
+              }}
+            >
+              {h}
+            </div>
+          ),
+        )}
       </div>
       {payments.map((payment, index) => {
         const tenant = tenants.find((item) => item.id === payment.tenantId);
@@ -2552,20 +2706,50 @@ function PaymentList({
                   : "none",
             }}
           >
-            <div>
+            <div
+              className="payment-cell"
+              data-label="Floor"
+              style={{ fontSize: 13, color: "var(--text-muted)" }}
+            >
+              {room ? floorLabel(room.floor) : "—"}
+            </div>
+            <div
+              className="payment-cell mono"
+              data-label="Room"
+              style={{ fontSize: 13, color: "var(--text-muted)" }}
+            >
+              {room?.number ?? "—"}
+            </div>
+            <div className="payment-cell" data-label="Tenant">
               <div className="payment-tenant-name">{tenant?.name ?? "—"}</div>
               <div className="payment-tenant-meta">
-                {room ? `${roomLocation(room)} · ` : ""}
-                {payment.monthsCovered} mo · {tagLabel(payment.daysOffset)}
+                {room?.buildingName ? `${room.buildingName} · ` : ""}
+                {payment.monthsCovered} mo
               </div>
             </div>
-            <div className="payment-col-months mono payment-muted-cell">
-              {payment.monthsCovered} mo
+            <div
+              className="payment-cell"
+              data-label="Date"
+              style={{ fontSize: 13, color: "var(--text-muted)" }}
+            >
+              {payment.recordedDate}
             </div>
-            <div className="payment-col-tag">
+            <div
+              className="payment-cell mono"
+              data-label="Mo."
+              style={{ fontSize: 13, color: "var(--text-muted)" }}
+            >
+              {payment.monthsCovered}
+            </div>
+            <div className="payment-cell" data-label="Status">
               <PaymentTagBadge daysOffset={payment.daysOffset} />
             </div>
-            <div className="mono payment-amount">{fmtRWF(payment.amount)}</div>
+            <div
+              className="payment-cell mono payment-amount"
+              data-label="Amount"
+            >
+              {fmtRWF(payment.amount)}
+            </div>
           </div>
         );
       })}
@@ -2667,6 +2851,16 @@ function PaymentsPage({
   const [paymentStatusFilter, setPaymentStatusFilter] = useState<
     "all" | "early" | "on-time" | "late"
   >("all");
+  const [paymentSort, setPaymentSort] = useState<
+    | "date-desc"
+    | "date-asc"
+    | "name-asc"
+    | "name-desc"
+    | "room-asc"
+    | "room-desc"
+    | "floor-asc"
+    | "floor-desc"
+  >("date-desc");
 
   // Edit-in-place state for the payment detail panel
   const [editingPaymentId, setEditingPaymentId] = useState<string | null>(null);
@@ -2717,13 +2911,23 @@ function PaymentsPage({
     setTimeout(() => setSubmitted(false), 3000);
   }
 
-  // All payments, newest first, with search + status filter applied.
+  // All payments, filtered by search + early/on-time/late status, then
+  // sorted by whichever key the person picked (date, tenant name, room
+  // number, or floor). Filtering and sorting are independent steps so
+  // e.g. "Late" + "Room number" always gives a correctly-ordered result,
+  // and the date-based sort always reflects the actual recordedDate.
   const filteredPayments = useMemo(() => {
-    const sorted = [...payments].sort((a, b) =>
-      a.recordedDate < b.recordedDate ? 1 : -1,
-    );
     const q = paymentSearch.trim().toLowerCase();
-    return sorted.filter((payment) => {
+
+    const withMeta = payments.map((payment) => {
+      const tenant = tenants.find((t) => t.id === payment.tenantId);
+      const room = tenant
+        ? rooms.find((r) => r.id === tenant.roomId)
+        : undefined;
+      return { payment, tenant, room };
+    });
+
+    const filtered = withMeta.filter(({ payment, tenant, room }) => {
       if (
         paymentStatusFilter !== "all" &&
         getTag(payment.daysOffset) !== paymentStatusFilter
@@ -2731,10 +2935,6 @@ function PaymentsPage({
         return false;
       }
       if (!q) return true;
-      const tenant = tenants.find((t) => t.id === payment.tenantId);
-      const room = tenant
-        ? rooms.find((r) => r.id === tenant.roomId)
-        : undefined;
       const haystack = [
         tenant?.name,
         room?.number,
@@ -2750,7 +2950,51 @@ function PaymentsPage({
         .toLowerCase();
       return haystack.includes(q);
     });
-  }, [payments, paymentSearch, paymentStatusFilter, tenants, rooms]);
+
+    const collator = new Intl.Collator(undefined, {
+      numeric: true,
+      sensitivity: "base",
+    });
+
+    const sorted = [...filtered].sort((a, b) => {
+      switch (paymentSort) {
+        case "date-asc":
+          return a.payment.recordedDate === b.payment.recordedDate
+            ? 0
+            : a.payment.recordedDate < b.payment.recordedDate
+              ? -1
+              : 1;
+        case "name-asc":
+          return collator.compare(a.tenant?.name ?? "", b.tenant?.name ?? "");
+        case "name-desc":
+          return collator.compare(b.tenant?.name ?? "", a.tenant?.name ?? "");
+        case "room-asc":
+          return collator.compare(a.room?.number ?? "", b.room?.number ?? "");
+        case "room-desc":
+          return collator.compare(b.room?.number ?? "", a.room?.number ?? "");
+        case "floor-asc":
+          return collator.compare(a.room?.floor ?? "", b.room?.floor ?? "");
+        case "floor-desc":
+          return collator.compare(b.room?.floor ?? "", a.room?.floor ?? "");
+        case "date-desc":
+        default:
+          return a.payment.recordedDate === b.payment.recordedDate
+            ? 0
+            : a.payment.recordedDate > b.payment.recordedDate
+              ? -1
+              : 1;
+      }
+    });
+
+    return sorted.map((x) => x.payment);
+  }, [
+    payments,
+    paymentSearch,
+    paymentStatusFilter,
+    paymentSort,
+    tenants,
+    rooms,
+  ]);
 
   function startEditPayment(payment: Payment) {
     setEditingPaymentId(payment.id);
@@ -2782,125 +3026,6 @@ function PaymentsPage({
     }
   }
 
-  // async function handleShare() {
-  //   if (!receiptRef.current || !selectedPayment) return;
-  //   setIsSharing(true);
-  //   try {
-  //     const canvas = await html2canvas(receiptRef.current, {
-  //       backgroundColor: null,
-  //       scale: 2,
-  //     });
-  //     const blob = await new Promise<Blob | null>((resolve) => {
-  //       canvas.toBlob((result) => resolve(result), "image/png");
-  //     });
-
-  //     if (!blob) return;
-
-  //     const tenant = tenants.find(
-  //       (item) => item.id === selectedPayment.tenantId,
-  //     );
-  //     const tenantName = tenant?.name ?? "tenant";
-  //     const file = new File([blob], `payment-receipt-${tenantName}.png`, {
-  //       type: "image/png",
-  //     });
-
-  //     if (
-  //       navigator.share &&
-  //       navigator.canShare &&
-  //       navigator.canShare({ files: [file] })
-  //     ) {
-  //       try {
-  //         await navigator.share({
-  //           files: [file],
-  //           title: "Payment Receipt",
-  //           text: `Payment receipt for ${tenantName}`,
-  //         });
-  //       } catch (err) {
-  //         console.error("Share cancelled or failed:", err);
-  //       }
-  //     } else {
-  //       const url = URL.createObjectURL(blob);
-  //       const a = document.createElement("a");
-  //       a.href = url;
-  //       a.download = `payment-receipt-${tenantName}.png`;
-  //       a.click();
-  //       URL.revokeObjectURL(url);
-  //     }
-  //   } finally {
-  //     window.setTimeout(() => setIsSharing(false), 500);
-  //   }
-  // }
-  // async function handleShare() {working wihout sweet alert
-  //   if (!receiptRef.current || !selectedPayment) return;
-  //   setIsSharing(true);
-  //   try {
-  //     const canvas = await html2canvas(receiptRef.current, {
-  //       backgroundColor: "#ffffff",
-  //       scale: 2,
-  //       useCORS: true,
-  //     });
-  //     const blob = await new Promise<Blob | null>((resolve) => {
-  //       canvas.toBlob((result) => resolve(result), "image/png");
-  //     });
-
-  //     if (!blob) {
-  //       alert("Couldn't generate the receipt image. Please try again.");
-  //       return;
-  //     }
-
-  //     const tenant = tenants.find(
-  //       (item) => item.id === selectedPayment.tenantId,
-  //     );
-  //     const tenantName = tenant?.name ?? "tenant";
-  //     const file = new File([blob], `payment-receipt-${tenantName}.png`, {
-  //       type: "image/png",
-  //     });
-
-  //     // Web Share API with files is unreliable on desktop and some
-  //     // mobile browsers — the app receiving the share often only
-  //     // honors text/title and silently drops the image, which is
-  //     // why it was showing up as "text only" in WhatsApp. Only trust
-  //     // it on touch devices, where it tends to actually work.
-  //     const isMobile = "ontouchstart" in window || navigator.maxTouchPoints > 0;
-
-  //     if (
-  //       isMobile &&
-  //       navigator.share &&
-  //       navigator.canShare &&
-  //       navigator.canShare({ files: [file] })
-  //     ) {
-  //       try {
-  //         await navigator.share({
-  //           files: [file],
-  //         });
-  //         return;
-  //       } catch (err) {
-  //         // User cancelled, or the share target rejected the file —
-  //         // fall through to the guaranteed download below either way.
-  //         console.error("Native share failed or cancelled:", err);
-  //       }
-  //     }
-
-  //     // Guaranteed path: download the image directly. Works on every
-  //     // device/browser, and the person can attach it in WhatsApp (or
-  //     // anywhere) manually — this always includes the full receipt,
-  //     // never degrades to text-only.
-  //     const url = URL.createObjectURL(blob);
-  //     const a = document.createElement("a");
-  //     a.href = url;
-  //     a.download = `payment-receipt-${tenantName}.png`;
-  //     a.click();
-  //     URL.revokeObjectURL(url);
-  //     alert(
-  //       "Receipt image saved. Open WhatsApp and attach it from your downloads to share.",
-  //     );
-  //   } catch (err) {
-  //     console.error("Failed to prepare receipt for sharing:", err);
-  //     alert("Something went wrong preparing the receipt. Please try again.");
-  //   } finally {
-  //     window.setTimeout(() => setIsSharing(false), 500);
-  //   }
-  // }
   async function handleShare() {
     if (!receiptRef.current || !selectedPayment) return;
     setIsSharing(true);
@@ -3005,14 +3130,14 @@ function PaymentsPage({
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "380px 1fr",
+          gridTemplateColumns: "380px minmax(0, 1fr)",
           gap: 24,
           alignItems: "start",
         }}
         className="page-grid-two"
       >
         {/* Record payment form */}
-        <Card style={{ padding: 20 }}>
+        <Card className="payment-form-card" style={{ padding: 20 }}>
           <div
             style={{
               fontWeight: 600,
@@ -3387,6 +3512,26 @@ function PaymentsPage({
                 </button>
               ))}
             </div>
+            <label className="payments-sort" aria-label="Sort payments">
+              <div className="payments-sort-wrap">
+                <select
+                  value={paymentSort}
+                  onChange={(e) =>
+                    setPaymentSort(e.target.value as typeof paymentSort)
+                  }
+                >
+                  <option value="date-desc">Date: newest first</option>
+                  <option value="date-asc">Date: oldest first</option>
+                  <option value="name-asc">Name: A → Z</option>
+                  <option value="name-desc">Name: Z → A</option>
+                  <option value="room-asc">Room number: low → high</option>
+                  <option value="room-desc">Room number: high → low</option>
+                  <option value="floor-asc">Floor: A → Z</option>
+                  <option value="floor-desc">Floor: Z → A</option>
+                </select>
+                {Icon.chevronDown}
+              </div>
+            </label>
           </div>
 
           {filteredPayments.length === 0 ? (
@@ -3681,28 +3826,6 @@ function PaymentsPage({
                               style={{ fontWeight: 600, color: "var(--text)" }}
                             >
                               {selectedPayment.recordedDate}
-                            </div>
-                          </div>
-                          <div
-                            style={{
-                              display: "flex",
-                              justifyContent: "space-between",
-                              alignItems: "center",
-                              gap: 10,
-                            }}
-                          >
-                            <div
-                              style={{
-                                fontSize: 12,
-                                color: "var(--text-muted)",
-                              }}
-                            >
-                              Months covered
-                            </div>
-                            <div
-                              style={{ fontWeight: 600, color: "var(--text)" }}
-                            >
-                              {selectedPayment.monthsCovered}
                             </div>
                           </div>
                           <div
@@ -4256,90 +4379,6 @@ function ReportsPage({
                     day: "numeric",
                   });
                   return (
-                    // <divtutangire
-                    //   key={p.id}
-                    //   className="table-row"
-                    //   style={{
-                    //     display: "grid",
-                    //     gridTemplateColumns:
-                    //       "100px 100px 1fr 110px 70px 80px 110px",
-                    //     gap: 12,
-                    //     padding: "13px 20px",
-                    //     alignItems: "center",
-                    //     borderBottom:
-                    //       i < results.length - 1
-                    //         ? "1px solid var(--border)"
-                    //         : "none",
-                    //     minWidth: "680px",
-                    //   }}
-                    // >
-                    //   <div
-                    //     style={{
-                    //       fontSize: 13,
-                    //       color: "var(--text-muted)",
-                    //       overflow: "hidden",
-                    //       textOverflow: "ellipsis",
-                    //       whiteSpace: "nowrap",
-                    //     }}
-                    //     title={buildingName}
-                    //   >
-                    //     {buildingName}
-                    //   </div>
-                    //   <div
-                    //     style={{
-                    //       fontSize: 13,
-                    //       color: "var(--text-muted)",
-                    //       overflow: "hidden",
-                    //       textOverflow: "ellipsis",
-                    //       whiteSpace: "nowrap",
-                    //     }}
-                    //     title={roomLabel}
-                    //   >
-                    //     {roomLabel}
-                    //   </div>
-                    //   <div
-                    //     style={{
-                    //       fontWeight: 500,
-                    //       color: "var(--text)",
-                    //       fontSize: 13,
-                    //       overflow: "hidden",
-                    //       textOverflow: "ellipsis",
-                    //       whiteSpace: "nowrap",
-                    //     }}
-                    //     title={t?.name ?? "—"}
-                    //   >
-                    //     {t?.name ?? "—"}
-                    //   </div>
-                    //   <div
-                    //     style={{
-                    //       fontSize: 13,
-                    //       color: "var(--text-muted)",
-                    //     }}
-                    //   >
-                    //     {paymentDateFormatted}
-                    //   </div>
-                    //   <div
-                    //     className="mono"
-                    //     style={{ fontSize: 13, color: "var(--text-muted)" }}
-                    //   >
-                    //     {p.monthsCovered} mo
-                    //   </div>
-                    //   <div>
-                    //     <PaymentTagBadge daysOffset={p.daysOffset} />
-                    //   </div>
-                    //   <div
-                    //     className="mono"
-                    //     style={{
-                    //       fontSize: 13,
-                    //       fontWeight: 500,
-                    //       color: "var(--text)",
-                    //       textAlign: "right",
-                    //       whiteSpace: "nowrap",
-                    //     }}
-                    //   >
-                    //     {fmtRWF(p.amount)}
-                    //   </div>
-                    // </div>
                     <div
                       key={p.id}
                       className="table-row report-row"
@@ -4350,29 +4389,80 @@ function ReportsPage({
                             : "none",
                       }}
                     >
-                      <div className="report-cell" data-label="Building" style={{ fontSize: 13, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={buildingName}>
+                      <div
+                        className="report-cell"
+                        data-label="Building"
+                        style={{
+                          fontSize: 13,
+                          color: "var(--text-muted)",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                        title={buildingName}
+                      >
                         {buildingName}
                       </div>
-                      <div className="report-cell" data-label="Room" style={{ fontSize: 13, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={roomLabel}>
+                      <div
+                        className="report-cell"
+                        data-label="Room"
+                        style={{
+                          fontSize: 13,
+                          color: "var(--text-muted)",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                        title={roomLabel}
+                      >
                         {roomLabel}
                       </div>
-                      <div className="report-cell" data-label="Tenant" style={{ fontWeight: 500, color: "var(--text)", fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={t?.name ?? "—"}>
+                      <div
+                        className="report-cell"
+                        data-label="Tenant"
+                        style={{
+                          fontWeight: 500,
+                          color: "var(--text)",
+                          fontSize: 13,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                        title={t?.name ?? "—"}
+                      >
                         {t?.name ?? "—"}
                       </div>
-                      <div className="report-cell" data-label="Payment Date" style={{ fontSize: 13, color: "var(--text-muted)" }}>
+                      <div
+                        className="report-cell"
+                        data-label="Payment Date"
+                        style={{ fontSize: 13, color: "var(--text-muted)" }}
+                      >
                         {paymentDateFormatted}
                       </div>
-                      <div className="report-cell mono" data-label="Months" style={{ fontSize: 13, color: "var(--text-muted)" }}>
+                      <div
+                        className="report-cell mono"
+                        data-label="Months"
+                        style={{ fontSize: 13, color: "var(--text-muted)" }}
+                      >
                         {p.monthsCovered} mo
                       </div>
                       <div className="report-cell" data-label="Status">
                         <PaymentTagBadge daysOffset={p.daysOffset} />
                       </div>
-                      <div className="report-cell mono" data-label="Amount" style={{ fontSize: 13, fontWeight: 500, color: "var(--text)", textAlign: "right", whiteSpace: "nowrap" }}>
+                      <div
+                        className="report-cell mono"
+                        data-label="Amount"
+                        style={{
+                          fontSize: 13,
+                          fontWeight: 500,
+                          color: "var(--text)",
+                          textAlign: "right",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
                         {fmtRWF(p.amount)}
                       </div>
                     </div>
-                    
                   );
                 })
               )}
@@ -4490,12 +4580,14 @@ function BuildingsPage({
   onAddRoom,
   onUpdateRoom,
   onDeleteRoom,
+  onBulkAddRooms,
 }: {
   rooms: Room[];
   tenants: TenantWithTin[];
   onAddRoom: (room: Partial<Room>) => void;
   onUpdateRoom: (room: Room) => void;
   onDeleteRoom: (roomId: string) => void;
+  onBulkAddRooms: (rooms: Partial<Room>[]) => void;
 }) {
   const [buildings, setBuildings] = useState<{ id: string; name: string }[]>(
     [],
@@ -4513,6 +4605,7 @@ function BuildingsPage({
     baseRent: "",
   }));
   const [submitted, setSubmitted] = useState(false);
+  const [roomError, setRoomError] = useState<string | null>(null);
   const [roomViewMode, setRoomViewMode] = useState<"grid" | "list">("grid");
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
   const [editingRoomId, setEditingRoomId] = useState<string | null>(null);
@@ -4614,13 +4707,41 @@ function BuildingsPage({
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!form.number.trim() || !form.baseRent.trim() || !buildingId) return;
+    setRoomError(null);
+
+    const trimmedNumber = form.number.trim();
+    const rentValue = parseInt(form.baseRent, 10);
+
+    if (!buildingId) {
+      setRoomError("Select a building first.");
+      return;
+    }
+    if (!trimmedNumber) {
+      setRoomError("Enter a room number.");
+      return;
+    }
+    if (!form.baseRent.trim() || Number.isNaN(rentValue) || rentValue <= 0) {
+      setRoomError("Enter a valid base rent greater than 0.");
+      return;
+    }
+    const duplicate = rooms.some(
+      (r) =>
+        r.buildingId === buildingId &&
+        r.floor === form.floor &&
+        r.number.trim().toLowerCase() === trimmedNumber.toLowerCase(),
+    );
+    if (duplicate) {
+      setRoomError(
+        `Room "${trimmedNumber}" already exists on ${floorLabel(form.floor)} in this building.`,
+      );
+      return;
+    }
 
     const newRoom: Partial<Room> = {
       id: "room-" + uniqueId(),
       floor: form.floor,
-      number: form.number.trim(),
-      baseRent: parseInt(form.baseRent, 10),
+      number: trimmedNumber,
+      baseRent: rentValue,
       occupied: false,
       buildingId,
     };
@@ -4757,6 +4878,24 @@ function BuildingsPage({
               Add Room
             </Button>
 
+            {roomError && (
+              <div
+                style={{
+                  padding: "10px 14px",
+                  backgroundColor: "var(--status-overdue-bg)",
+                  borderRadius: "var(--radius-sm)",
+                  color: "var(--status-overdue)",
+                  fontSize: 13,
+                  fontWeight: 500,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                {Icon.alert} {roomError}
+              </div>
+            )}
+
             {submitted && (
               <div
                 style={{
@@ -4776,7 +4915,12 @@ function BuildingsPage({
             )}
           </form>
         </Card>
-
+            <BulkAddRooms
+          buildingId={buildingId}
+          floorOptions={currentFloorOptions}
+          existingRooms={rooms}
+          onBulkAddRooms={onBulkAddRooms}
+        />
         <div className="room-view-toolbar" aria-label="Room view options">
           <span>Room view</span>
           <div
@@ -5505,8 +5649,9 @@ function Sidebar({
           top: 0,
           left: 0,
           zIndex: 100,
-          transition:
-            "width 0.25s ease, padding 0.25s ease, transform 0.25s ease",
+          transition: isMobileView
+            ? "transform 0.25s ease"
+            : "width 0.65s cubic-bezier(0.22, 1, 0.36, 1), padding 0.65s cubic-bezier(0.22, 1, 0.36, 1)",
           transform:
             isMobileView && collapsed ? "translateX(-100%)" : "translateX(0)",
           boxShadow:
@@ -5581,29 +5726,37 @@ function Sidebar({
                 <polyline points="9 22 9 12 15 12 15 22" />
               </svg>
             </div>
-            {!collapsed ? (
-              <div>
-                <div
-                  style={{
-                    fontWeight: 700,
-                    fontSize: 15,
-                    color: "var(--text)",
-                    letterSpacing: "-0.01em",
-                  }}
-                >
-                  Rent Manager
-                </div>
-                <div
-                  style={{
-                    fontSize: 11,
-                    color: "var(--text-muted)",
-                    marginTop: 1,
-                  }}
-                >
-                  Kigali · 2026
-                </div>
+            <div
+              style={{
+                overflow: "hidden",
+                maxWidth: collapsed ? 0 : 160,
+                opacity: collapsed ? 0 : 1,
+                transition: isMobileView
+                  ? "none"
+                  : "max-width 0.65s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.4s ease",
+                whiteSpace: "nowrap",
+              }}
+            >
+              <div
+                style={{
+                  fontWeight: 700,
+                  fontSize: 15,
+                  color: "var(--text)",
+                  letterSpacing: "-0.01em",
+                }}
+              >
+                Rent Manager
               </div>
-            ) : null}
+              <div
+                style={{
+                  fontSize: 11,
+                  color: "var(--text-muted)",
+                  marginTop: 1,
+                }}
+              >
+                Kigali · 2026
+              </div>
+            </div>
           </div>
         </div>
 
@@ -5618,10 +5771,10 @@ function Sidebar({
                   style={{
                     display: "flex",
                     alignItems: "center",
-                    justifyContent: collapsed ? "center" : "flex-start",
-                    gap: collapsed ? 0 : 10,
+                    justifyContent: "flex-start",
+                    gap: 10,
                     width: "100%",
-                    padding: collapsed ? "9px 0" : "9px 12px",
+                    padding: collapsed ? "9px 12px" : "9px 12px",
                     borderRadius: "var(--radius-sm)",
                     border: "none",
                     cursor: "pointer",
@@ -5649,18 +5802,30 @@ function Sidebar({
                   title={item.label}
                 >
                   <span style={{ flexShrink: 0 }}>{item.icon}</span>
-                  {!collapsed ? <span>{item.label}</span> : null}
-                  {active && !collapsed && (
-                    <span
-                      style={{
-                        marginLeft: "auto",
-                        width: 4,
-                        height: 4,
-                        borderRadius: "50%",
-                        backgroundColor: "var(--accent)",
-                      }}
-                    />
-                  )}
+                  <span
+                    style={{
+                      overflow: "hidden",
+                      maxWidth: collapsed ? 0 : 160,
+                      opacity: collapsed ? 0 : 1,
+                      transition: isMobileView
+                        ? "none"
+                        : "max-width 0.65s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.4s ease",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {item.label}
+                  </span>
+                  <span
+                    style={{
+                      marginLeft: "auto",
+                      width: 4,
+                      height: 4,
+                      borderRadius: "50%",
+                      backgroundColor: "var(--accent)",
+                      opacity: active && !collapsed ? 1 : 0,
+                      transition: "opacity 0.3s ease",
+                    }}
+                  />
                 </button>
               );
             })}
@@ -5678,10 +5843,10 @@ function Sidebar({
             style={{
               display: "flex",
               alignItems: "center",
-              justifyContent: collapsed ? "center" : "flex-start",
-              gap: collapsed ? 0 : 8,
+              justifyContent: "flex-start",
+              gap: 8,
               width: "100%",
-              padding: collapsed ? "8px 0" : "8px 12px",
+              padding: "8px 12px",
               borderRadius: "var(--radius-sm)",
               border: "1px solid var(--border)",
               cursor: "pointer",
@@ -5700,7 +5865,19 @@ function Sidebar({
             title={darkMode ? "Light mode" : "Dark mode"}
           >
             {darkMode ? <Sun size={16} /> : <Moon size={16} />}
-            {!collapsed ? (darkMode ? "Light mode" : "Dark mode") : null}
+            <span
+              style={{
+                overflow: "hidden",
+                maxWidth: collapsed ? 0 : 120,
+                opacity: collapsed ? 0 : 1,
+                transition: isMobileView
+                  ? "none"
+                  : "max-width 0.65s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.4s ease",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {darkMode ? "Light mode" : "Dark mode"}
+            </span>
           </button>
         </div>
       </aside>
@@ -5847,10 +6024,24 @@ function SettingsPage() {
     }
   }
 
+  // Bulk floor entry: accepts multiple floor names separated by commas,
+  // newlines, or semicolons in one go (e.g. "Ground, L1, L2, L3" or one
+  // per line) so a whole building's floors can be added at once. Still
+  // works perfectly for a single floor name too.
   function addFloorToLocalList() {
-    const name = newFloorName.trim();
-    if (!name || floorList.includes(name)) return;
-    setFloorList((fl) => [...fl, name]);
+    const rawNames = newFloorName
+      .split(/[\n,;]+/)
+      .map((n) => n.trim())
+      .filter(Boolean);
+    if (rawNames.length === 0) return;
+
+    setFloorList((fl) => {
+      const next = [...fl];
+      for (const name of rawNames) {
+        if (!next.includes(name)) next.push(name);
+      }
+      return next;
+    });
     setNewFloorName("");
   }
 
@@ -6127,20 +6318,48 @@ function SettingsPage() {
           </div>
 
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-            <Input
-              label="New floor name"
-              placeholder="e.g. Mezzanine"
-              value={newFloorName}
-              onChange={(e) => setNewFloorName(e.target.value)}
-              style={{ flex: "1 1 200px" }}
-            />
+            <div style={{ flex: "1 1 240px" }}>
+              <Label>New floor name(s)</Label>
+              <textarea
+                placeholder={
+                  "e.g. Mezzanine\nOr add several at once:\nGround, L1, L2, L3"
+                }
+                value={newFloorName}
+                onChange={(e) => setNewFloorName(e.target.value)}
+                rows={2}
+                style={{
+                  width: "100%",
+                  padding: "8px 12px",
+                  backgroundColor: "var(--input-bg)",
+                  border: "1px solid var(--input-border)",
+                  borderRadius: "var(--radius-sm)",
+                  color: "var(--text)",
+                  outline: "none",
+                  fontFamily: "inherit",
+                  fontSize: 14,
+                  resize: "vertical",
+                  minHeight: 40,
+                }}
+              />
+              <div
+                style={{
+                  fontSize: 11,
+                  color: "var(--text-muted)",
+                  marginTop: 5,
+                }}
+              >
+                Separate multiple floors with a comma or a new line — e.g.
+                "Ground, L1, L2, L3" — to add them all at once.
+              </div>
+            </div>
             <div style={{ display: "flex", alignItems: "flex-end", gap: 8 }}>
               <Button
                 variant="secondary"
                 onClick={addFloorToLocalList}
+                disabled={!newFloorName.trim()}
                 style={{ display: "flex", alignItems: "center", gap: 6 }}
               >
-                <Plus size={14} /> Add Floor
+                <Plus size={14} /> Add Floor(s)
               </Button>
               <Button onClick={saveFloors}>Save Floors</Button>
             </div>
@@ -6255,6 +6474,22 @@ export default function App() {
     setPage(routeToPage[location.pathname] ?? "dashboard");
   }, [location.pathname]);
 
+  // Desktop-only polish: arriving on Payments with the sidebar expanded
+  // should feel intentional, not abrupt. Let the page sit with the
+  // sidebar still open for half a second so the arrival registers, then
+  // ease it closed. Runs once per navigation — sidebarCollapsed is
+  // deliberately left out of the dependency array so this never re-fires
+  // from a later manual toggle while still on this page.
+  useEffect(() => {
+    if (location.pathname !== "/payments" || isMobileView) return;
+
+    const timer = setTimeout(() => {
+      setSidebarCollapsed((current) => (current ? current : true));
+    }, 550);
+
+    return () => clearTimeout(timer);
+  }, [location.pathname, isMobileView]);
+
   useEffect(() => {
     function handleResize() {
       const mobile = window.innerWidth < 768;
@@ -6295,15 +6530,13 @@ export default function App() {
     loadData();
   }, []);
 
-  async function handleAddTenant(newTenant: TenantWithTin, room: Room) {
+  async function handleAddTenant(newTenant: TenantWithTin, roomsUsed: Room[]) {
     try {
-      const savedTenant = await addTenant({ ...newTenant, room_id: room.id });
+      const savedTenant = await addTenant({ ...newTenant, room_id: newTenant.roomId });
       setTenants((ts) => [...ts, savedTenant as TenantWithTin]);
-      // FIX: actually mark the room occupied (this used to spread the room
-      // without setting occupied:true, which is part of why the Dashboard
-      // could show stale numbers).
+      const usedIds = new Set(roomsUsed.map((r) => r.id));
       setRooms((rs) =>
-        rs.map((r) => (r.id === room.id ? { ...r, occupied: true } : r)),
+        rs.map((r) => (usedIds.has(r.id) ? { ...r, occupied: true } : r)),
       );
     } catch (err) {
       console.error("Failed to add tenant", err);
@@ -6311,13 +6544,16 @@ export default function App() {
     }
   }
 
-  async function handleUpdateTenant(updated: TenantWithTin) {
+  async function handleUpdateTenant(
+    updated: TenantWithTin & { extraRoomIds?: string[] },
+  ) {
     try {
       const saved = await updateTenant(updated.id, {
         name: updated.name,
         phone: updated.phone,
         tinNumber: updated.tinNumber,
         roomId: updated.roomId,
+        extraRoomIds: updated.extraRoomIds,
         monthlyRent: updated.monthlyRent,
         dueDay: updated.dueDay,
       });
@@ -6326,11 +6562,9 @@ export default function App() {
           t.id === updated.id ? ((saved as TenantWithTin) ?? updated) : t,
         ),
       );
+      const allIds = [updated.roomId, ...(updated.extraRoomIds ?? [])];
       setRooms((rs) =>
-        rs.map((r) => {
-          if (r.id === updated.roomId) return { ...r, occupied: true };
-          return r;
-        }),
+        rs.map((r) => (allIds.includes(r.id) ? { ...r, occupied: true } : r)),
       );
     } catch (err) {
       console.error("Failed to update tenant", err);
@@ -6356,18 +6590,30 @@ export default function App() {
     }
   }
 
-  async function handleAddRoom(newRoom: Partial<Room>) {
-    try {
-      const savedRoom = await addRoom({
-        ...newRoom,
-        building_id: newRoom.buildingId,
-      });
-      setRooms((rs) => [...rs, savedRoom]);
-    } catch (err) {
-      console.error("Failed to add room", err);
-      setError("Failed to add room");
-    }
+async function handleAddRoom(newRoom: Partial<Room>) {
+  try {
+    const savedRoom = await addRoom({
+      ...newRoom,
+      building_id: newRoom.buildingId,
+    });
+    setRooms((rs) => [...rs, savedRoom]);
+  } catch (err) {
+    console.error("Failed to add room", err);
+    setError("Failed to add room");
   }
+}
+
+async function handleBulkAddRooms(newRooms: Partial<Room>[]) {
+  try {
+    const saved = await Promise.all(
+      newRooms.map((r) => addRoom({ ...r, building_id: r.buildingId })),
+    );
+    setRooms((rs) => [...rs, ...saved]);
+  } catch (err) {
+    console.error("Failed to bulk add rooms", err);
+    setError("Failed to add rooms in bulk");
+  }
+}
 
   async function handleUpdateRoom(newRoom: Room) {
     try {
@@ -6527,7 +6773,13 @@ export default function App() {
 
         <main
           className="main-content"
-          style={{ flex: 1, overflowY: "auto", minHeight: "100vh" }}
+          style={{
+            flex: 1,
+            overflowY: "auto",
+            overflowX: "hidden",
+            minHeight: "100vh",
+            minWidth: 0,
+          }}
         >
           {error ? (
             <div
@@ -6597,6 +6849,7 @@ export default function App() {
                       onAddRoom={handleAddRoom}
                       onUpdateRoom={handleUpdateRoom}
                       onDeleteRoom={handleDeleteRoom}
+                      onBulkAddRooms={handleBulkAddRooms}
                     />
                   )}
                   {page === "settings" && <SettingsPage />}

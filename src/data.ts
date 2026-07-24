@@ -1,36 +1,37 @@
-// export type PaymentTag = "early" | "on-time" | "late";
+export type PaymentTag = "early" | "on-time" | "late";
 
-// export interface Room {
-//   id: string;
-//   floor: string;
-//   number: string;
-//   baseRent: number;
-//   occupied: boolean;
-//   tenantId?: string;
-//   buildingId?: string;
-//   buildingName?: string;
-// }
+export interface Room {
+  id: string;
+  floor: string;
+  number: string;
+  baseRent: number;
+  occupied: boolean;
+  tenantId?: string;
+  buildingId?: string;
+  buildingName?: string;
+}
 
-// export interface Tenant {
-//   id: string;
-//   name: string;
-//   phone?: string;
-//   tinNumber?: string;
-//   roomId: string;
-//   monthlyRent: number;
-//   dueDay: number;
-//   startDate: string;
-// }
+export interface Tenant {
+  id: string;
+  name: string;
+  phone?: string;
+  tinNumber?: string;
+  roomId: string;
+  extraRoomIds?: string[];
+  monthlyRent: number;
+  dueDay: number;
+  startDate: string;
+}
 
-// export interface Payment {
-//   id: string;
-//   tenantId: string;
-//   monthsCovered: number;
-//   periodStart: string; // 'YYYY-MM'
-//   recordedDate: string; // 'YYYY-MM-DD'
-//   amount: number;
-//   daysOffset: number; // negative = early, 0 = on-time, positive = late
-// }
+export interface Payment {
+  id: string;
+  tenantId: string;
+  monthsCovered: number;
+  periodStart: string; // 'YYYY-MM'
+  recordedDate: string; // 'YYYY-MM-DD'
+  amount: number;
+  daysOffset: number; // negative = early, 0 = on-time, positive = late
+}
 
 // export const INITIAL_ROOMS: Room[] = [
 //   {
