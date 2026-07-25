@@ -291,6 +291,28 @@ function uniqueId() {
   return Math.random().toString(36).slice(2);
 }
 
+// Shared SweetAlert2 confirmation for every "delete this thing" action in
+// the app, so they all look and behave the same way instead of the plain
+// browser confirm() popup.
+async function confirmDelete(
+  title: string,
+  text: string,
+  confirmText = "Yes, delete",
+) {
+  const result = await Swal.fire({
+    title,
+    text,
+    icon: "warning",
+    showCancelButton: true,
+    confirmButtonText: confirmText,
+    cancelButtonText: "Cancel",
+    confirmButtonColor: "#DC2626",
+    cancelButtonColor: "#6B7280",
+    reverseButtons: true,
+  });
+  return result.isConfirmed;
+}
+
 function getTenantForRoom(
   roomId: string,
   tenants: Array<Tenant & { extraRoomIds?: string[] }>,
@@ -2047,8 +2069,12 @@ function TenantsPage({
     setEditingTenantId(null);
   }
 
-  function handleDelete(t: TenantWithTin) {
-    if (window.confirm(`Remove ${t.name} and free up their room?`)) {
+  async function handleDelete(t: TenantWithTin) {
+    const confirmed = await confirmDelete(
+      "Remove tenant?",
+      `This will remove ${t.name} and free up their room.`,
+    );
+    if (confirmed) {
       onDeleteTenant(t.id);
     }
   }
@@ -3141,8 +3167,12 @@ function PaymentsPage({
     setSelectedPayment(null);
   }
 
-  function handleDeletePaymentClick(payment: Payment) {
-    if (window.confirm("Delete this payment record? This cannot be undone.")) {
+  async function handleDeletePaymentClick(payment: Payment) {
+    const confirmed = await confirmDelete(
+      "Delete this payment?",
+      "This payment record will be permanently removed. This cannot be undone.",
+    );
+    if (confirmed) {
       onDeletePayment(payment.id);
       setSelectedPayment(null);
       setEditingPaymentId(null);
@@ -4674,11 +4704,13 @@ function RoomList({
               </button>
               <button
                 type="button"
-                onClick={(event) => {
+                onClick={async (event) => {
                   event.stopPropagation();
-                  if (
-                    window.confirm("Are you sure you want to delete this room?")
-                  ) {
+                  const confirmed = await confirmDelete(
+                    "Delete this room?",
+                    `Room ${room.number} will be permanently removed.`,
+                  );
+                  if (confirmed) {
                     onDelete(room.id);
                   }
                 }}
@@ -5270,13 +5302,13 @@ function BuildingsPage({
                                         <Edit2 size={14} />
                                       </button>
                                       <button
-                                        onClick={(event) => {
+                                        onClick={async (event) => {
                                           event.stopPropagation();
-                                          if (
-                                            window.confirm(
-                                              "Are you sure you want to delete this room?",
-                                            )
-                                          ) {
+                                          const confirmed = await confirmDelete(
+                                            "Delete this room?",
+                                            `Room ${room.number} will be permanently removed.`,
+                                          );
+                                          if (confirmed) {
                                             onDeleteRoom(room.id);
                                           }
                                         }}
@@ -6113,11 +6145,11 @@ function SettingsPage() {
   }
 
   async function handleDeleteBuilding(buildingId: string) {
-    if (
-      window.confirm(
-        "Are you sure you want to delete this building? This action cannot be undone.",
-      )
-    ) {
+    const confirmed = await confirmDelete(
+      "Delete this building?",
+      "All rooms tied to this building may be affected. This action cannot be undone.",
+    );
+    if (confirmed) {
       try {
         await deleteBuilding(buildingId);
         setBuildings((bs) => bs.filter((b) => b.id !== buildingId));
@@ -6167,6 +6199,12 @@ function SettingsPage() {
   }
 
   async function removeFloor(name: string) {
+    const confirmed = await confirmDelete(
+      "Delete this floor?",
+      `"${floorLabel(name)}" will be removed from this building's floor list.`,
+    );
+    if (!confirmed) return;
+
     const floorId = savedFloorIds[name];
     if (floorId) {
       try {

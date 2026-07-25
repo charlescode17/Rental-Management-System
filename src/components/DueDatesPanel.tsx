@@ -39,7 +39,8 @@ export default function DueDatesPanel({
       Swal.fire({
         icon: "success",
         title: "All Clear",
-        text: "No tenants are overdue or due soon.",
+        // text: "No tenants are overdue or due soon.",
+        text: "No tenants are to due soon.",
         confirmButtonText: "OK",
         confirmButtonColor: "#2F6F5E",
       });
