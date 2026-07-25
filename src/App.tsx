@@ -40,6 +40,7 @@ import {
   Search,
   SlidersHorizontal,
   Share,
+  Loader2,
 } from "lucide-react";
 import WelcomePage from "./WelcomePage";
 import BulkAddRooms from "./components/BulkAddRooms";
@@ -715,6 +716,9 @@ const GLOBAL_CSS = `
   }
 }
 
+@keyframes spin-icon { to { transform: rotate(360deg); } }
+.spin-icon { animation: spin-icon 0.8s linear infinite; }
+
 /* Accessible focus rings */
 button:focus-visible, input:focus-visible, select:focus-visible {
   outline: 2px solid var(--accent);
@@ -1010,7 +1014,22 @@ function StatusBadge({
     </span>
   );
 }
-
+// Plain colored text version of the status tag — used only on the
+// payment card (grid view), where the bordered pill looked cramped
+// next to the wallet icon.
+function PaymentTagText({ daysOffset }: { daysOffset: number }) {
+  const tag = getTag(daysOffset);
+  const color = {
+    early: "var(--status-paid)",
+    "on-time": "var(--status-paid)",
+    late: "var(--status-overdue)",
+  }[tag];
+  return (
+    <span style={{ fontSize: 12, fontWeight: 700, color }}>
+      {tagLabel(daysOffset)}
+    </span>
+  );
+}
 function PaymentTagBadge({ daysOffset }: { daysOffset: number }) {
   const tag = getTag(daysOffset);
   const cfg = {
@@ -2877,7 +2896,11 @@ function PaymentList({
             <div
               className="payment-cell"
               data-label="Date"
-              style={{ fontSize: 13, color: "var(--text-muted)" }}
+              style={{
+                fontSize: 13,
+                backgroundColor: "transparent",
+                color: "var(--text-muted)",
+              }}
             >
               {payment.recordedDate}
             </div>
@@ -2889,7 +2912,7 @@ function PaymentList({
               {payment.monthsCovered}
             </div>
             <div className="payment-cell" data-label="Status">
-              <PaymentTagBadge daysOffset={payment.daysOffset} />
+              <PaymentTagText daysOffset={payment.daysOffset} />
             </div>
             <div
               className="payment-cell mono payment-amount"
@@ -2934,7 +2957,7 @@ function PaymentGrid({
               <span className="payment-card-icon">
                 <Wallet size={16} />
               </span>
-              <PaymentTagBadge daysOffset={payment.daysOffset} />
+              <PaymentTagText daysOffset={payment.daysOffset} />
             </div>
             <strong>{tenant?.name ?? "Unknown tenant"}</strong>
             <span className="payment-card-location">{roomLocation(room)}</span>
@@ -3031,12 +3054,34 @@ function PaymentsPage({
   const numMonths = parseInt(months) || 1;
   const total = selectedTenant ? selectedTenant.monthlyRent * numMonths : 0;
 
+  // Only used for a tenant who has never had a payment recorded — defaults
+  // the period to THIS month's due day, even if it has already passed,
+  // so a catch-up payment on an overdue tenant is tagged correctly instead
+  // of silently jumping to next month (which made it look "early").
+  function firstUnpaidPeriodStart(tenant: Tenant): string {
+    const today = new Date();
+    const daysInMonth = new Date(
+      today.getFullYear(),
+      today.getMonth() + 1,
+      0,
+    ).getDate();
+    const day = Math.min(tenant.dueDay, daysInMonth);
+    const due = new Date(today.getFullYear(), today.getMonth(), day);
+    const y = due.getFullYear();
+    const m = String(due.getMonth() + 1).padStart(2, "0");
+    const d = String(due.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  }
+
   function selectTenant(t: Tenant) {
     setSelectedTenant(t);
     setSearch(t.name);
     setShowDropdown(false);
-    const due = computeNextDueDate(t, payments);
-    setPeriodStart(due.nextDueDate);
+    const hasHistory = payments.some((p) => p.tenantId === t.id);
+    const nextPeriodStart = hasHistory
+      ? computeNextDueDate(t, payments).nextDueDate
+      : firstUnpaidPeriodStart(t);
+    setPeriodStart(nextPeriodStart);
   }
 
   function handleSubmit(e: React.FormEvent) {
@@ -3145,12 +3190,26 @@ function PaymentsPage({
     rooms,
   ]);
 
+  // A native <input type="date"> only accepts exactly "YYYY-MM-DD" and
+  // silently renders blank for anything else — which is why the field
+  // looked empty. Handles every shape this value might come back as:
+  // a full timestamp like "2026-07-15T00:00:00.000Z" (common when the
+  // database returns a timestamp instead of a plain date), a clean
+  // "2026-07-15", a legacy "2026-07" with no day at all, or missing.
+  function normalizeForDateInput(value: string | null | undefined): string {
+    if (!value) return "";
+    const isoMatch = value.match(/^(\d{4}-\d{2}-\d{2})/);
+    if (isoMatch) return isoMatch[1];
+    if (/^\d{4}-\d{2}$/.test(value)) return `${value}-01`;
+    return "";
+  }
+
   function startEditPayment(payment: Payment) {
     setEditingPaymentId(payment.id);
     setEditPaymentForm({
       months: String(payment.monthsCovered),
-      periodStart: payment.periodStart,
-      recordedDate: payment.recordedDate,
+      periodStart: normalizeForDateInput(payment.periodStart),
+      recordedDate: normalizeForDateInput(payment.recordedDate),
     });
   }
 
@@ -3204,6 +3263,20 @@ function PaymentsPage({
         return;
       }
 
+      // Best-effort: copy the receipt straight to the clipboard so it can
+      // be pasted immediately (e.g. into WhatsApp). Not every browser
+      // supports this, so a failure here is silent and never blocks the
+      // download below.
+      let clipboardCopied = false;
+      try {
+        await navigator.clipboard.write([
+          new ClipboardItem({ "image/png": blob }),
+        ]);
+        clipboardCopied = true;
+      } catch (clipErr) {
+        console.error("Clipboard copy failed:", clipErr);
+      }
+
       const tenant = tenants.find(
         (item) => item.id === selectedPayment.tenantId,
       );
@@ -3250,7 +3323,9 @@ function PaymentsPage({
       await Swal.fire({
         icon: "success",
         title: "Receipt Saved!",
-        text: "The receipt image has been downloaded successfully.",
+        text: clipboardCopied
+          ? "The receipt image has been downloaded and copied to your clipboard — ready to paste."
+          : "The receipt image has been downloaded successfully.",
         showCancelButton: true,
         confirmButtonText: "Open WhatsApp",
         cancelButtonText: "Close",
@@ -3750,10 +3825,15 @@ function PaymentsPage({
                             className="payment-detail-close"
                             onClick={handleShare}
                             aria-label="Share payment receipt"
+                            title="Share receipt"
                             disabled={isSharing}
                             style={{ opacity: isSharing ? 0.7 : 1 }}
                           >
-                            {isSharing ? "Preparing..." : <Share size={16} />}
+                            {isSharing ? (
+                              <Loader2 size={16} className="spin-icon" />
+                            ) : (
+                              <Share size={16} />
+                            )}
                           </button>
                           <button
                             type="button"
@@ -3814,7 +3894,7 @@ function PaymentsPage({
                         }
                         required
                       />
-                      <div>
+                      {/* <div>
                         <Label>Period Start (Day / Month / Year)</Label>
                         <input
                           type="date"
@@ -3837,7 +3917,7 @@ function PaymentsPage({
                             fontFamily: "inherit",
                           }}
                         />
-                      </div>
+                      </div> */}
                       <div>
                         <Label>Payment Date</Label>
                         <input
@@ -3926,9 +4006,6 @@ function PaymentsPage({
                               {paymentRoom?.buildingName ?? "Building"}
                             </div>
                           </div>
-                          {/* <PaymentTagBadge
-                            daysOffset={selectedPayment.daysOffset}
-                          /> */}
                         </div>
 
                         <div
@@ -3959,6 +4036,26 @@ function PaymentsPage({
                         </div>
 
                         <div style={{ display: "grid", gap: 8 }}>
+                          <div
+                            style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              alignItems: "center",
+                              gap: 10,
+                            }}
+                          >
+                            <div
+                              style={{
+                                fontSize: 12,
+                                color: "var(--text-muted)",
+                              }}
+                            >
+                              Status
+                            </div>
+                            <PaymentTagBadge
+                              daysOffset={selectedPayment.daysOffset}
+                            />
+                          </div>
                           <div
                             style={{
                               display: "flex",
@@ -4071,25 +4168,6 @@ function PaymentsPage({
                             }}
                           >
                             {fmtRWF(selectedPayment.amount)}
-                          </div>
-                        </div>
-
-                        <div
-                          style={{
-                            display: "flex",
-                            justifyContent: "space-between",
-                            alignItems: "center",
-                          }}
-                        >
-                          <div
-                            style={{ fontSize: 12, color: "var(--text-muted)" }}
-                          >
-                            Status
-                          </div>
-                          <div
-                            style={{ fontWeight: 600, color: "var(--text)" }}
-                          >
-                            {tagLabel(selectedPayment.daysOffset)}
                           </div>
                         </div>
                       </div>
