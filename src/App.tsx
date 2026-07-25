@@ -3896,9 +3896,9 @@ function PaymentsPage({
                               {paymentRoom?.buildingName ?? "Building"}
                             </div>
                           </div>
-                          <PaymentTagBadge
+                          {/* <PaymentTagBadge
                             daysOffset={selectedPayment.daysOffset}
-                          />
+                          /> */}
                         </div>
 
                         <div
