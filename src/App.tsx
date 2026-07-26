@@ -3092,7 +3092,7 @@ function PaymentsPage({
       tenantId: selectedTenant.id,
       monthsCovered: numMonths,
       periodStart,
-      recordedDate: todayStr,
+      recordedDate: periodStart,
       amount: total,
       daysOffset: 0,
     };
@@ -6116,7 +6116,7 @@ function Sidebar({
   );
 }
 
-function SettingsPage() {
+function SettingsPage({ rooms }: { rooms: Room[] }) {
   const [buildings, setBuildings] = useState<{ id: string; name: string }[]>(
     [],
   );
@@ -6223,9 +6223,18 @@ function SettingsPage() {
   }
 
   async function handleDeleteBuilding(buildingId: string) {
+    const roomsInBuilding = rooms.filter((r) => r.buildingId === buildingId);
+    if (roomsInBuilding.length > 0) {
+      await Swal.fire({
+        icon: "error",
+        title: "Can't delete this building",
+        text: `This building still has ${roomsInBuilding.length} room(s). Delete or reassign them first.`,
+      });
+      return;
+    }
     const confirmed = await confirmDelete(
       "Delete this building?",
-      "All rooms tied to this building may be affected. This action cannot be undone.",
+      "This action cannot be undone.",
     );
     if (confirmed) {
       try {
@@ -6870,6 +6879,17 @@ async function handleBulkAddRooms(newRooms: Partial<Room>[]) {
   }
 
   async function handleDeleteRoom(roomId: string) {
+    const tenantUsingRoom = tenants.find(
+      (t) => t.roomId === roomId || t.extraRoomIds?.includes(roomId),
+    );
+    if (tenantUsingRoom) {
+      await Swal.fire({
+        icon: "error",
+        title: "Can't delete this room",
+        text: `${tenantUsingRoom.name} is still assigned to this room. Remove or reassign the tenant first.`,
+      });
+      return;
+    }
     try {
       await deleteRoom(roomId);
       setRooms((rs) => rs.filter((room) => room.id !== roomId));
@@ -7089,7 +7109,7 @@ async function handleBulkAddRooms(newRooms: Partial<Room>[]) {
                       onBulkAddRooms={handleBulkAddRooms}
                     />
                   )}
-                  {page === "settings" && <SettingsPage />}
+                  {page === "settings" && <SettingsPage rooms={rooms} />}
                 </>
               )}
             </>
