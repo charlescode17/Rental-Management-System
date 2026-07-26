@@ -6195,6 +6195,7 @@ function SettingsPage({ rooms }: { rooms: Room[] }) {
       const b = await addBuilding({ id: "building-" + Date.now(), name });
       setBuildings((bs) => [...bs, b]);
       setSelectedBuilding(b.id);
+      setFloorsBuildingId(b.id);
       setNewBuildingName("");
     } catch (err) {
       console.error("Failed to add building", err);
@@ -6268,21 +6269,49 @@ function SettingsPage({ rooms }: { rooms: Room[] }) {
   // newlines, or semicolons in one go (e.g. "Ground, L1, L2, L3" or one
   // per line) so a whole building's floors can be added at once. Still
   // works perfectly for a single floor name too.
-  function addFloorToLocalList() {
+  async function addFloorToLocalList() {
     const rawNames = newFloorName
       .split(/[\n,;]+/)
       .map((n) => n.trim())
       .filter(Boolean);
-    if (rawNames.length === 0) return;
+    if (rawNames.length === 0 || !floorsBuildingId) return;
 
-    setFloorList((fl) => {
-      const next = [...fl];
-      for (const name of rawNames) {
-        if (!next.includes(name)) next.push(name);
-      }
-      return next;
-    });
+    const namesToAdd = rawNames.filter((name) => !floorList.includes(name));
+    if (namesToAdd.length === 0) {
+      setNewFloorName("");
+      return;
+    }
+
+    // Instant feedback: the new floor chips show up right away.
+    setFloorList((fl) => [...fl, ...namesToAdd]);
     setNewFloorName("");
+
+    // Save each one in the background; only roll back ones that fail.
+    const results = await Promise.allSettled(
+      namesToAdd.map((name) => addFloor(floorsBuildingId, name)),
+    );
+
+    const failed: string[] = [];
+    results.forEach((result, i) => {
+      const name = namesToAdd[i];
+      if (result.status === "fulfilled") {
+        setSavedFloorIds((prev) => ({ ...prev, [name]: result.value.id }));
+      } else {
+        failed.push(name);
+      }
+    });
+
+    if (failed.length > 0) {
+      setFloorList((fl) => fl.filter((f) => !failed.includes(f)));
+      await Swal.fire({
+        icon: "error",
+        title: "Couldn't add floor(s)",
+        text: `Failed to save: ${failed.join(", ")}. Please try again.`,
+      });
+    } else {
+      setFloorsSaved(true);
+      setTimeout(() => setFloorsSaved(false), 2000);
+    }
   }
 
   async function removeFloor(name: string) {
@@ -6837,27 +6866,52 @@ export default function App() {
   }
 
 async function handleAddRoom(newRoom: Partial<Room>) {
+  const optimisticRoom = { ...newRoom, occupied: false } as Room;
+  // Instant feedback: show the room right away, save in the background.
+  setRooms((rs) => [...rs, optimisticRoom]);
   try {
     const savedRoom = await addRoom({
       ...newRoom,
       building_id: newRoom.buildingId,
     });
-    setRooms((rs) => [...rs, savedRoom]);
+    setRooms((rs) =>
+      rs.map((r) => (r.id === optimisticRoom.id ? savedRoom : r)),
+    );
   } catch (err) {
     console.error("Failed to add room", err);
-    setError("Failed to add room");
+    setRooms((rs) => rs.filter((r) => r.id !== optimisticRoom.id));
+    await Swal.fire({
+      icon: "error",
+      title: "Couldn't add room",
+      text: "Something went wrong saving this room. Please try again.",
+    });
   }
 }
 
 async function handleBulkAddRooms(newRooms: Partial<Room>[]) {
+  const optimisticRooms = newRooms.map((r) => ({
+    ...r,
+    occupied: false,
+  })) as Room[];
+  const optimisticIds = new Set(optimisticRooms.map((r) => r.id));
+  // Instant feedback: show all rooms right away, save in the background.
+  setRooms((rs) => [...rs, ...optimisticRooms]);
   try {
     const saved = await Promise.all(
       newRooms.map((r) => addRoom({ ...r, building_id: r.buildingId })),
     );
-    setRooms((rs) => [...rs, ...saved]);
+    setRooms((rs) => {
+      const withoutOptimistic = rs.filter((r) => !optimisticIds.has(r.id));
+      return [...withoutOptimistic, ...saved];
+    });
   } catch (err) {
     console.error("Failed to bulk add rooms", err);
-    setError("Failed to add rooms in bulk");
+    setRooms((rs) => rs.filter((r) => !optimisticIds.has(r.id)));
+    await Swal.fire({
+      icon: "error",
+      title: "Couldn't add rooms",
+      text: "Something went wrong saving these rooms. Please try again.",
+    });
   }
 }
 
