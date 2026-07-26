@@ -6338,7 +6338,14 @@ function SettingsPage({ rooms }: { rooms: Room[] }) {
   }
 
   async function saveFloors() {
-    if (!floorsBuildingId) return;
+    if (!floorsBuildingId) {
+      await Swal.fire({
+        icon: "error",
+        title: "No building selected",
+        text: "Select a building above before saving floors.",
+      });
+      return;
+    }
 
     try {
       const existingNames = new Set(Object.keys(savedFloorIds));
@@ -6364,9 +6371,13 @@ function SettingsPage({ rooms }: { rooms: Room[] }) {
       setTimeout(() => setFloorsSaved(false), 3000);
     } catch (err) {
       console.error("Failed to save floors", err);
+      await Swal.fire({
+        icon: "error",
+        title: "Couldn't save floors",
+        text: "Something went wrong saving your floors. Please try again.",
+      });
     }
   }
-
   return (
     <div className="settings-page">
       <SectionHeader
