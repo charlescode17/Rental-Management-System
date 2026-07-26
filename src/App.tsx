@@ -6137,7 +6137,7 @@ function SettingsPage({ rooms }: { rooms: Room[] }) {
 
   // Per-building floor configuration
   const [floorsBuildingId, setFloorsBuildingId] = useState("");
-  const [floorList, setFloorList] = useState<string[]>([...DEFAULT_FLOORS]);
+  const [floorList, setFloorList] = useState<string[]>([]);
   const [savedFloorIds, setSavedFloorIds] = useState<Record<string, string>>(
     {},
   );
@@ -6177,7 +6177,7 @@ function SettingsPage({ rooms }: { rooms: Room[] }) {
       );
     } catch (err) {
       console.error("Failed to load floors", err);
-      setFloorList([...DEFAULT_FLOORS]);
+      setFloorList([]);
       setSavedFloorIds({});
     }
   }
