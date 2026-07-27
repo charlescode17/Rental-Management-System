@@ -250,23 +250,23 @@ function buildReminders(
 ): ReminderRow[] {
   const rows: ReminderRow[] = [];
   for (const t of tenants) {
-    if (paidThisMonth(t.id, payments)) continue;
     const room = rooms.find((r) => r.id === t.roomId);
     if (!room) continue;
-    if (t.dueDay < TODAY_DAY) {
+    const due = computeNextDueDate(t, payments);
+    if (due.isOverdue) {
       rows.push({
         tenant: t,
         room,
-        daysOverdue: TODAY_DAY - t.dueDay,
+        daysOverdue: Math.abs(due.daysUntilDue),
         daysUntilDue: 0,
         status: "overdue",
       });
-    } else if (t.dueDay >= TODAY_DAY && t.dueDay - TODAY_DAY <= 5) {
+    } else if (due.daysUntilDue >= 0 && due.daysUntilDue <= 5) {
       rows.push({
         tenant: t,
         room,
         daysOverdue: 0,
-        daysUntilDue: t.dueDay - TODAY_DAY,
+        daysUntilDue: due.daysUntilDue,
         status: "due-soon",
       });
     }
@@ -1642,7 +1642,6 @@ function NotificationsPage({
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<"all" | "overdue" | "due-soon">("all");
-  const [sort, setSort] = useState<"overdue" | "today" | "soon">("overdue");
   const reminders = useMemo(
     () => buildReminders(tenants, rooms, payments),
     [tenants, rooms, payments],
@@ -1656,24 +1655,12 @@ function NotificationsPage({
           !normalizedQuery ||
           row.tenant.name.toLowerCase().includes(normalizedQuery),
       )
-      .sort((a, b) => {
-        if (sort === "today") {
-          return (
-            (a.status === "due-soon" ? a.daysUntilDue : 99) -
-            (b.status === "due-soon" ? b.daysUntilDue : 99)
-          );
-        }
-        if (sort === "soon") {
-          const days = (row: ReminderRow) =>
-            row.status === "overdue" ? row.daysOverdue + 100 : row.daysUntilDue;
-          return days(a) - days(b);
-        }
-        return (
+      .sort(
+        (a, b) =>
           (b.status === "overdue" ? b.daysOverdue : -1) -
-          (a.status === "overdue" ? a.daysOverdue : -1)
-        );
-      });
-  }, [filter, query, reminders, sort]);
+          (a.status === "overdue" ? a.daysOverdue : -1),
+      );
+  }, [filter, query, reminders]);
 
   return (
     <div className="notifications-page">
@@ -1725,18 +1712,7 @@ function NotificationsPage({
             </button>
           ))}
         </div>
-        <label className="notification-sort">
-          <SlidersHorizontal size={16} aria-hidden="true" />
-          <span className="sr-only">Sort notifications</span>
-          <select
-            value={sort}
-            onChange={(event) => setSort(event.target.value as typeof sort)}
-          >
-            <option value="overdue">Most overdue</option>
-            <option value="today">Due today</option>
-            <option value="soon">Due soon</option>
-          </select>
-        </label>
+        
       </div>
 
       {filteredReminders.length === 0 ? (
