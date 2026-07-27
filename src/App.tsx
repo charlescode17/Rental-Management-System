@@ -1642,6 +1642,9 @@ function NotificationsPage({
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<"all" | "overdue" | "due-soon">("all");
+  const [selectedReminder, setSelectedReminder] = useState<ReminderRow | null>(
+    null,
+  );
   const reminders = useMemo(
     () => buildReminders(tenants, rooms, payments),
     [tenants, rooms, payments],
@@ -1712,7 +1715,6 @@ function NotificationsPage({
             </button>
           ))}
         </div>
-        
       </div>
 
       {filteredReminders.length === 0 ? (
@@ -1726,13 +1728,122 @@ function NotificationsPage({
       ) : (
         <div className="notifications-list">
           {filteredReminders.map((row) => (
-            <div className="notification-card" key={row.tenant.id}>
+            <div
+              className="notification-card"
+              key={row.tenant.id}
+              onClick={() => setSelectedReminder(row)}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  setSelectedReminder(row);
+                }
+              }}
+              style={{ cursor: "pointer" }}
+            >
               <div className="notification-icon">
                 <CalendarDays size={18} />
               </div>
               <ReminderItem row={row} />
             </div>
           ))}
+        </div>
+      )}
+
+      {selectedReminder && (
+        <div
+          className="payment-detail-backdrop"
+          onClick={() => setSelectedReminder(null)}
+        >
+          <Card
+            className="payment-detail-panel"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="payment-detail-header">
+              <div>
+                <span className="payment-detail-eyebrow">
+                  {selectedReminder.status === "overdue"
+                    ? "Overdue tenant"
+                    : "Due soon"}
+                </span>
+                <h2>{selectedReminder.tenant.name}</h2>
+              </div>
+              <button
+                type="button"
+                className="payment-detail-close"
+                onClick={() => setSelectedReminder(null)}
+                aria-label="Close reminder details"
+              >
+                <X size={17} />
+              </button>
+            </div>
+
+            <div style={{ padding: "16px 2px 2px" }}>
+              <div className="payment-detail-status">
+                <StatusBadge
+                  status={
+                    selectedReminder.status === "overdue"
+                      ? "overdue"
+                      : "due-soon"
+                  }
+                />
+              </div>
+
+              <div className="payment-detail-grid">
+                <div>
+                  <span>Room</span>
+                  <strong>{roomLocation(selectedReminder.room)}</strong>
+                </div>
+                <div>
+                  <span>Monthly rent</span>
+                  <strong>
+                    {selectedReminder.tenant.monthlyRent
+                      ? fmtRWF(selectedReminder.tenant.monthlyRent)
+                      : "—"}
+                  </strong>
+                </div>
+                <div>
+                  <span>Due day</span>
+                  <strong>Day {selectedReminder.tenant.dueDay}</strong>
+                </div>
+                <div>
+                  <span>
+                    {selectedReminder.status === "overdue"
+                      ? "Days overdue"
+                      : "Days until due"}
+                  </span>
+                  <strong>
+                    {selectedReminder.status === "overdue"
+                      ? selectedReminder.daysOverdue
+                      : selectedReminder.daysUntilDue}
+                  </strong>
+                </div>
+                {selectedReminder.tenant.phone && (
+                  <div>
+                    <span>Phone</span>
+                    <strong>{selectedReminder.tenant.phone}</strong>
+                  </div>
+                )}
+                <div>
+                  <span>Tenant since</span>
+                  <strong>{selectedReminder.tenant.startDate}</strong>
+                </div>
+              </div>
+
+              <div style={{ marginTop: 16 }}>
+                <Button
+                  style={{ width: "100%" }}
+                  onClick={() => {
+                    setSelectedReminder(null);
+                    navigate("/payments");
+                  }}
+                >
+                  Record a Payment
+                </Button>
+              </div>
+            </div>
+          </Card>
         </div>
       )}
     </div>
