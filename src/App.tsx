@@ -528,12 +528,20 @@ const GLOBAL_CSS = `
   white-space: nowrap;
 }
 .multi-room-picker-list {
-  max-height: 260px;
+  max-height: 160px;
   overflow-y: auto;
   padding-right: 4px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
 }
+.multi-room-picker-list::-webkit-scrollbar { width: 8px; }
+.multi-room-picker-list::-webkit-scrollbar-track { background: var(--surface2); border-radius: 8px; }
+.multi-room-picker-list::-webkit-scrollbar-thumb {
+  background: var(--accent);
+  border-radius: 8px;
+  border: 1px solid var(--surface2);
+}
+.multi-room-picker-list::-webkit-scrollbar-thumb:hover { background: var(--accent-hover); }
 @media (max-width: 640px) {
   .tbl-tenants { grid-template-columns: 1fr 100px 56px; }
   .tenant-col-rooms { display: none; }
@@ -625,6 +633,28 @@ const GLOBAL_CSS = `
 }
 
 .tenants-toolbar { flex-wrap: wrap; }
+
+.tenant-form-scroll::-webkit-scrollbar { width: 8px; }
+.tenant-form-scroll::-webkit-scrollbar-track { background: var(--surface2); border-radius: 8px; }
+.tenant-form-scroll::-webkit-scrollbar-thumb {
+  background: var(--accent);
+  border-radius: 8px;
+  border: 1px solid var(--surface2);
+}
+.tenant-form-scroll::-webkit-scrollbar-thumb:hover { background: var(--accent-hover); }
+
+.tenants-list-scroll {
+  max-height: 560px;
+  overflow-y: auto;
+}
+.tenants-list-scroll::-webkit-scrollbar { width: 10px; }
+.tenants-list-scroll::-webkit-scrollbar-track { background: var(--surface2); border-radius: 8px; }
+.tenants-list-scroll::-webkit-scrollbar-thumb {
+  background: var(--accent);
+  border-radius: 8px;
+  border: 2px solid var(--surface2);
+}
+.tenants-list-scroll::-webkit-scrollbar-thumb:hover { background: var(--accent-hover); }
 
 /* Record-a-Payment form card: comfortable on phones, not just desktop */
 @media (max-width: 640px) {
@@ -1963,6 +1993,7 @@ function TenantsPage({
   const [roomsModalTenant, setRoomsModalTenant] =
     useState<TenantWithTin | null>(null);
   const [query, setQuery] = useState("");
+  const [tenantSort, setTenantSort] = useState<"room" | "name">("room");
 
   const [editingTenantId, setEditingTenantId] = useState<string | null>(null);
   const [editingTenant, setEditingTenant] = useState({
@@ -2102,9 +2133,26 @@ function TenantsPage({
     }
   }
 
-  const filteredTenants = query.trim()
-    ? tenants.filter((t) => t.name.toLowerCase().includes(query.toLowerCase()))
-    : tenants;
+  const tenantCollator = new Intl.Collator(undefined, {
+    numeric: true,
+    sensitivity: "base",
+  });
+  const filteredTenants = (
+    query.trim()
+      ? tenants.filter((t) =>
+          t.name.toLowerCase().includes(query.toLowerCase()),
+        )
+      : tenants
+  )
+    .slice()
+    .sort((a, b) => {
+      if (tenantSort === "name") {
+        return tenantCollator.compare(a.name, b.name);
+      }
+      const roomA = tenantRoomsList(a, rooms)[0]?.number ?? "";
+      const roomB = tenantRoomsList(b, rooms)[0]?.number ?? "";
+      return tenantCollator.compare(roomA, roomB);
+    });
 
   const editableRooms = rooms
     .filter(
@@ -2179,6 +2227,26 @@ function TenantsPage({
                   minWidth: 140,
                 }}
               />
+              <select
+                value={tenantSort}
+                onChange={(e) =>
+                  setTenantSort(e.target.value as "room" | "name")
+                }
+                aria-label="Sort tenants"
+                style={{
+                  padding: "6px 10px",
+                  borderRadius: "var(--radius-sm)",
+                  border: "1px solid var(--input-border)",
+                  backgroundColor: "var(--input-bg)",
+                  color: "var(--text)",
+                  fontSize: 13,
+                  outline: "none",
+                  cursor: "pointer",
+                }}
+              >
+                <option value="room">Sort: Room</option>
+                <option value="name">Sort: Name A → Z</option>
+              </select>
               <div
                 style={{
                   display: "flex",
@@ -2244,7 +2312,7 @@ function TenantsPage({
             </div>
           ) : viewMode === "grid" ? (
             <div
-              className="tenant-card-grid"
+              className="tenant-card-grid tenants-list-scroll"
               style={{
                 display: "grid",
                 gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))",
@@ -2372,7 +2440,7 @@ function TenantsPage({
               })}
             </div>
           ) : (
-            <div style={{ overflowX: "auto" }}>
+            <div className="tenants-list-scroll" style={{ overflowX: "auto" }}>
               <div
                 className="tbl-tenants"
                 style={{
@@ -2533,7 +2601,16 @@ function TenantsPage({
         </Card>
 
         {/* Register form */}
-        <Card style={{ padding: 20 }}>
+        <Card
+          className="tenant-form-scroll"
+          style={{
+            padding: 20,
+            maxHeight: "calc(100vh - 48px)",
+            overflowY: "auto",
+            position: "sticky",
+            top: 24,
+          }}
+        >
           <div
             style={{
               fontWeight: 600,
@@ -2981,6 +3058,16 @@ function PaymentGrid({
   );
 }
 
+type PaymentSortOption =
+  | "date-desc"
+  | "date-asc"
+  | "name-asc"
+  | "name-desc"
+  | "room-asc"
+  | "room-desc"
+  | "floor-asc"
+  | "floor-desc";
+
 function PaymentsPage({
   rooms,
   tenants,
@@ -3027,16 +3114,8 @@ function PaymentsPage({
   const [paymentStatusFilter, setPaymentStatusFilter] = useState<
     "all" | "early" | "on-time" | "late"
   >("all");
-  const [paymentSort, setPaymentSort] = useState<
-    | "date-desc"
-    | "date-asc"
-    | "name-asc"
-    | "name-desc"
-    | "room-asc"
-    | "room-desc"
-    | "floor-asc"
-    | "floor-desc"
-  >("date-desc");
+
+  const [paymentSort, setPaymentSort] = useState<PaymentSortOption>("date-asc");
 
   // Edit-in-place state for the payment detail panel
   const [editingPaymentId, setEditingPaymentId] = useState<string | null>(null);
@@ -3156,14 +3235,20 @@ function PaymentsPage({
       sensitivity: "base",
     });
 
+    const dateValue = (raw: string) => {
+      const match = raw?.match(/^(\d{4}-\d{2}-\d{2})/);
+      const clean = match ? match[1] : raw;
+      const time = new Date(clean).getTime();
+      return Number.isNaN(time) ? 0 : time;
+    };
+
     const sorted = [...filtered].sort((a, b) => {
       switch (paymentSort) {
         case "date-asc":
-          return a.payment.recordedDate === b.payment.recordedDate
-            ? 0
-            : a.payment.recordedDate < b.payment.recordedDate
-              ? -1
-              : 1;
+          return (
+            dateValue(a.payment.recordedDate) -
+            dateValue(b.payment.recordedDate)
+          );
         case "name-asc":
           return collator.compare(a.tenant?.name ?? "", b.tenant?.name ?? "");
         case "name-desc":
@@ -3178,11 +3263,10 @@ function PaymentsPage({
           return collator.compare(b.room?.floor ?? "", a.room?.floor ?? "");
         case "date-desc":
         default:
-          return a.payment.recordedDate === b.payment.recordedDate
-            ? 0
-            : a.payment.recordedDate > b.payment.recordedDate
-              ? -1
-              : 1;
+          return (
+            dateValue(b.payment.recordedDate) -
+            dateValue(a.payment.recordedDate)
+          );
       }
     });
 
