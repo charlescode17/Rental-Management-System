@@ -1994,9 +1994,13 @@ function TenantsPage({
     };
   }, []);
 
-  const vacantRooms = rooms.filter(
-    (room) => !getTenantForRoom(room.id, tenants),
-  );
+  const roomCollator = new Intl.Collator(undefined, {
+    numeric: true,
+    sensitivity: "base",
+  });
+  const vacantRooms = rooms
+    .filter((room) => !getTenantForRoom(room.id, tenants))
+    .sort((a, b) => roomCollator.compare(a.number, b.number));
 
   const selectedRoom = rooms.find((r) => r.id === form.roomId);
 
@@ -2102,11 +2106,13 @@ function TenantsPage({
     ? tenants.filter((t) => t.name.toLowerCase().includes(query.toLowerCase()))
     : tenants;
 
-  const editableRooms = rooms.filter(
-    (room) =>
-      !getTenantForRoom(room.id, tenants) ||
-      editSelectedRoomIds.includes(room.id),
-  );
+  const editableRooms = rooms
+    .filter(
+      (room) =>
+        !getTenantForRoom(room.id, tenants) ||
+        editSelectedRoomIds.includes(room.id),
+    )
+    .sort((a, b) => roomCollator.compare(a.number, b.number));
 
   return (
     <div>
@@ -5012,9 +5018,14 @@ function BuildingsPage({
     (buildingFloors[buildingId] && buildingFloors[buildingId].length > 0
       ? buildingFloors[buildingId]
       : DEFAULT_FLOORS) ?? DEFAULT_FLOORS;
-  const orphanRooms = rooms.filter(
-    (r) => !buildings.some((b) => b.id === r.buildingId),
-  );
+  const orphanRooms = rooms
+    .filter((r) => !buildings.some((b) => b.id === r.buildingId))
+    .sort((a, b) =>
+      new Intl.Collator(undefined, {
+        numeric: true,
+        sensitivity: "base",
+      }).compare(a.number, b.number),
+    );
 
   return (
     <div>
@@ -5242,9 +5253,13 @@ function BuildingsPage({
                 </div>
               ) : (
                 floorsForBuilding.map((floor) => {
-                  const floorRooms = buildingRooms.filter(
-                    (r) => r.floor === floor,
-                  );
+                  const roomCollator = new Intl.Collator(undefined, {
+                    numeric: true,
+                    sensitivity: "base",
+                  });
+                  const floorRooms = buildingRooms
+                    .filter((r) => r.floor === floor)
+                    .sort((a, b) => roomCollator.compare(a.number, b.number));
                   if (floorRooms.length === 0) return null;
                   const vacantCount = floorRooms.filter(
                     (room) => !getTenantForRoom(room.id, tenants),
