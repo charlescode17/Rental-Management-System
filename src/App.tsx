@@ -1835,8 +1835,11 @@ function NotificationsPage({
                 <Button
                   style={{ width: "100%" }}
                   onClick={() => {
+                    const tenantId = selectedReminder.tenant.id;
                     setSelectedReminder(null);
-                    navigate("/payments");
+                    navigate("/payments", {
+                      state: { preselectTenantId: tenantId },
+                    });
                   }}
                 >
                   Record a Payment
@@ -3179,6 +3182,7 @@ function PaymentsPage({
 }) {
   const todayStr = new Date().toISOString().slice(0, 10); // e.g. "2026-07-23"
   const currentMonthStr = todayStr.slice(0, 7); // e.g. "2026-07"
+  const location = useLocation();
 
   const [search, setSearch] = useState("");
   const [selectedTenant, setSelectedTenant] = useState<Tenant | null>(null);
@@ -3255,6 +3259,18 @@ function PaymentsPage({
       : firstUnpaidPeriodStart(t);
     setPeriodStart(nextPeriodStart);
   }
+
+  useEffect(() => {
+    const preselectId = (
+      location.state as { preselectTenantId?: string } | null
+    )?.preselectTenantId;
+    if (!preselectId) return;
+    const tenant = tenants.find((t) => t.id === preselectId);
+    if (tenant) {
+      selectTenant(tenant);
+    }
+    window.history.replaceState({}, document.title);
+  }, [location.state, tenants]);
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
