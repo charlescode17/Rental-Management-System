@@ -24,8 +24,8 @@ jobs:
       - name: Create credential files from secrets
         run: |
           mkdir -p credentials
-          echo "$GOOGLE_OAUTH_CLIENT_JSON" > credentials/oauth-client.json
-          echo "$GOOGLE_OAUTH_TOKEN_JSON" > credentials/drive-token.json
+          echo "$OAUTH_CLIENT" > credentials/oauth-client.json
+          echo "$DRIVE_TOKEN" > credentials/drive-token.json
           cat > .env.backup <<EOF
           SUPABASE_URL=$SUPABASE_URL
           SUPABASE_SERVICE_ROLE_KEY=$SUPABASE_SERVICE_ROLE_KEY
