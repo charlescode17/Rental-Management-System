@@ -43,6 +43,13 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
 
+      - name: Debug credential file sizes
+        run: |
+          echo "oauth-client.json size (bytes):"
+          wc -c credentials/oauth-client.json
+          echo "drive-token.json size (bytes):"
+          wc -c credentials/drive-token.json
+
       - name: Run backup
         run: npm run backup
 
