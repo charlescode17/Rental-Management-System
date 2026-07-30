@@ -53,7 +53,7 @@ function createZip(jsonFilePath: string, zipFilePath: string) {
   });
 }
 
-async function uploadToDrive(zipFilePath: string) {
+function getDriveClient() {
   const credentials = JSON.parse(
     fsSync.readFileSync(oauthClientPath as string, "utf-8")
   );
@@ -70,7 +70,11 @@ async function uploadToDrive(zipFilePath: string) {
   );
   oAuth2Client.setCredentials(tokens);
 
-  const drive = google.drive({ version: "v3", auth: oAuth2Client });
+  return google.drive({ version: "v3", auth: oAuth2Client });
+}
+
+async function uploadToDrive(zipFilePath: string) {
+  const drive = getDriveClient();
 
   const fileName = path.basename(zipFilePath);
 
@@ -92,6 +96,57 @@ async function uploadToDrive(zipFilePath: string) {
   if (response.data.webViewLink) {
     console.log(`🔗 ${response.data.webViewLink}`);
   }
+}
+
+async function cleanupOldDriveBackups() {
+  const drive = getDriveClient();
+
+  console.log("🧹 Checking for old backups to clean up...");
+
+  const response = await drive.files.list({
+    q: `'${googleDriveFolderId}' in parents and name contains 'rentmanager-backup-' and trashed = false`,
+    fields: "files(id, name, createdTime)",
+    orderBy: "createdTime desc",
+  });
+
+  const files = response.data.files || [];
+
+  const KEEP_MINIMUM = 5;
+  const MAX_AGE_DAYS = 30;
+  const cutoffDate = new Date();
+  cutoffDate.setDate(cutoffDate.getDate() - MAX_AGE_DAYS);
+
+  // Always keep the most recent KEEP_MINIMUM backups untouched,
+  // regardless of age — this is the safety net against accidental
+  // deletion of everything if the date logic ever misbehaves.
+  const filesToConsider = files.slice(KEEP_MINIMUM);
+
+  const filesToDelete = filesToConsider.filter((file) => {
+    if (!file.createdTime) return false;
+    return new Date(file.createdTime) < cutoffDate;
+  });
+
+  if (filesToDelete.length === 0) {
+    console.log("✅ No old backups to delete.");
+    return;
+  }
+
+  console.log(
+    `🗑️  Deleting ${filesToDelete.length} backup(s) older than ${MAX_AGE_DAYS} days...`
+  );
+
+  for (const file of filesToDelete) {
+    try {
+      await drive.files.delete({ fileId: file.id as string });
+      console.log(`   Deleted: ${file.name}`);
+    } catch (err) {
+      console.error(`   Failed to delete ${file.name}:`, err);
+    }
+  }
+
+  console.log(
+    `✅ Cleanup complete. ${filesToDelete.length} old backup(s) removed.`
+  );
 }
 
 async function runBackup() {
@@ -129,6 +184,7 @@ async function runBackup() {
   console.log(`📦 ZIP created: ${zipPath}`);
 
   await uploadToDrive(zipPath);
+  await cleanupOldDriveBackups();
 
   console.log("");
   console.log("🎉 Backup completed!");
