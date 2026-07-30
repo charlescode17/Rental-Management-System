@@ -4405,7 +4405,7 @@ function ReportsPage({
       const monthsCovered = p.monthsCovered;
       const amount = p.amount;
       const status =
-        p.daysOffset < 0 ? "early" : p.daysOffset === 0 ? "on-time" : "late";
+        p.daysOffset < 0 ? "" : p.daysOffset === 0 ? "on-time" : "late";
       return {
         building: buildingName,
         room: roomLabel,
