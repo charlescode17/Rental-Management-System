@@ -84,17 +84,13 @@ function fmtRWF(n: number) {
 }
 
 function getTag(daysOffset: number): PaymentTag {
-  if (daysOffset < 0) return "early";
-  if (daysOffset === 0) return "on-time";
-  return "late";
+  return daysOffset > 0 ? "late" : "on-time";
 }
 
 function tagLabel(daysOffset: number): string {
   const tag = getTag(daysOffset);
-  const d = Math.abs(daysOffset);
-  if (tag === "early") return `${d}d early`;
-  if (tag === "on-time") return "On time";
-  return `${d}d late`;
+  if (tag === "late") return `${daysOffset}d late`;
+  return "On time";
 }
 
 function initials(name: string) {
@@ -1050,7 +1046,6 @@ function StatusBadge({
 function PaymentTagText({ daysOffset }: { daysOffset: number }) {
   const tag = getTag(daysOffset);
   const color = {
-    early: "var(--status-paid)",
     "on-time": "var(--status-paid)",
     late: "var(--status-overdue)",
   }[tag];
@@ -1063,7 +1058,6 @@ function PaymentTagText({ daysOffset }: { daysOffset: number }) {
 function PaymentTagBadge({ daysOffset }: { daysOffset: number }) {
   const tag = getTag(daysOffset);
   const cfg = {
-    early: { bg: "var(--status-paid-bg)", color: "var(--status-paid)" },
     "on-time": { bg: "var(--status-paid-bg)", color: "var(--status-paid)" },
     late: { bg: "var(--status-overdue-bg)", color: "var(--status-overdue)" },
   }[tag];
@@ -3202,8 +3196,8 @@ function PaymentsPage({
   // not just the most recent records) — matches tenant name, room, floor,
   // building, amount, period, and status tag.
   const [paymentSearch, setPaymentSearch] = useState("");
-  const [paymentStatusFilter, setPaymentStatusFilter] = useState<
-    "all" | "early" | "on-time" | "late"
+  const [paymentStatusFilter, setPaymentStatusFilter] = useState <
+    "all" | "on-time" | "late"
   >("all");
 
   const [paymentSort, setPaymentSort] = useState<PaymentSortOption>("date-asc");
@@ -3915,7 +3909,7 @@ function PaymentsPage({
               className="payments-status-filters"
               aria-label="Filter payments by status"
             >
-              {(["all", "early", "on-time", "late"] as const).map((value) => (
+              {(["all", "on-time", "late"] as const).map((value) => (
                 <button
                   type="button"
                   key={value}
@@ -3925,11 +3919,9 @@ function PaymentsPage({
                 >
                   {value === "all"
                     ? "All"
-                    : value === "early"
-                      ? "Early"
-                      : value === "on-time"
-                        ? "On time"
-                        : "Late"}
+                    : value === "on-time"
+                      ? "On time"
+                      : "Late"}
                 </button>
               ))}
             </div>

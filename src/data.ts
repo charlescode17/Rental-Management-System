@@ -1,4 +1,4 @@
-export type PaymentTag = "early" | "on-time" | "late";
+export type PaymentTag = "on-time" | "late";
 
 export interface Room {
   id: string;
