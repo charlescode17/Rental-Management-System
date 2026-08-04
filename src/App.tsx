@@ -169,6 +169,16 @@ const CURRENT_MONTH = `${now.getFullYear()}-${String(
   now.getMonth() + 1,
 ).padStart(2, "0")}`;
 
+// Full "YYYY-MM-DD" for today, and a readable "Month YYYY" label — used
+// anywhere the UI previously had a hardcoded date/year baked in.
+const TODAY_STR = `${now.getFullYear()}-${String(
+  now.getMonth() + 1,
+).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+const CURRENT_MONTH_LABEL = now.toLocaleDateString("en-US", {
+  month: "long",
+  year: "numeric",
+});
+
 // periodStart is now a full "YYYY-MM-DD" date (the day rent coverage
 // starts), not just a month. This pulls out the "YYYY-MM" key from it —
 // works whether periodStart is "2026-07" (legacy) or "2026-07-15" (new).
@@ -1895,7 +1905,7 @@ function DashboardPage({
     <div>
       <SectionHeader
         title="Dashboard"
-        subtitle="July 2026 · Kigali rental overview"
+        subtitle={`${CURRENT_MONTH_LABEL} · Musanze rental overview`}
       />
 
       <div className="stats-grid" style={{ marginBottom: 32 }}>
@@ -4381,10 +4391,10 @@ function ReportsPage({
   payments: Payment[];
 }) {
   const [tab, setTab] = useState<ReportTab>("monthly");
-  const [month, setMonth] = useState("2026-07");
-  const [year, setYear] = useState("2026");
-  const [dateFrom, setDateFrom] = useState("2026-01-01");
-  const [dateTo, setDateTo] = useState("2026-07-19");
+  const [month, setMonth] = useState(CURRENT_MONTH);
+  const [year, setYear] = useState(String(now.getFullYear()));
+  const [dateFrom, setDateFrom] = useState(`${now.getFullYear()}-01-01`);
+  const [dateTo, setDateTo] = useState(TODAY_STR);
   const [tenantId, setTenantId] = useState("");
   const [generated, setGenerated] = useState(false);
   const [results, setResults] = useState<Payment[]>([]);
@@ -6179,7 +6189,7 @@ function Sidebar({
                   marginTop: 1,
                 }}
               >
-                Kigali · 2026
+                Musanze · {now.getFullYear()}
               </div>
             </div>
           </div>

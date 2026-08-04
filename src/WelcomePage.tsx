@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import {
   Building2,
@@ -5,6 +6,8 @@ import {
   BellRing,
   FileBarChart,
   ArrowRight,
+  Menu,
+  X,
 } from "lucide-react";
 
 const WP_CSS = `
@@ -36,11 +39,42 @@ const WP_CSS = `
   background: color-mix(in srgb, var(--wp-bg) 88%, transparent);
   backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--wp-line);
-  flex-wrap: wrap; gap: 12px;
+  gap: 12px;
 }
-.wp-logo { display: flex; align-items: center; gap: 10px; font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 17px; }
+.wp-logo { display: flex; align-items: center; gap: 10px; font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 17px; flex-shrink: 0; }
 .wp-logo-mark { width: 32px; height: 32px; border-radius: 8px; background: var(--accent); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-.wp-nav-links { display: flex; gap: 10px; }
+.wp-nav-links { display: flex; gap: 10px; flex-shrink: 0; }
+.wp-nav-toggle {
+  display: none;
+  width: 38px; height: 38px;
+  align-items: center; justify-content: center;
+  border-radius: 8px; border: 1px solid var(--wp-line);
+  background: transparent; color: var(--wp-ink);
+  cursor: pointer; flex-shrink: 0; padding: 0;
+}
+
+@media (max-width: 560px) {
+  .wp-nav-toggle { display: flex; }
+  .wp-nav-links {
+    position: absolute;
+    top: 100%; left: 0; right: 0;
+    flex-direction: column; align-items: stretch;
+    padding: 12px 16px 16px;
+    background: var(--wp-bg);
+    border-bottom: 1px solid var(--wp-line);
+    box-shadow: 0 12px 24px -12px rgba(20,30,25,0.18);
+    z-index: 19;
+  }
+  .wp-nav-links.is-closed { display: none; }
+  .wp-nav-links .wp-btn { justify-content: center; }
+}
+
+@media (max-width: 420px) {
+  .wp-nav { padding: 12px 16px; gap: 8px; }
+  .wp-logo { font-size: 15px; gap: 8px; }
+  .wp-logo-mark { width: 28px; height: 28px; }
+  .wp-btn { padding: 8px 12px; font-size: 12.5px; }
+}
 .wp-btn {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 9px 16px; border-radius: 8px; font-weight: 600; font-size: 13.5px;
@@ -234,8 +268,14 @@ function LedgerPreview() {
   return (
     <div className="wp-ledger" aria-hidden="true">
       <div className="wp-ledger-head">
-        <span className="wp-ledger-title">July 2026 · Ledger</span>
-        <span className="wp-ledger-tag">Kigali</span>
+        <span className="wp-ledger-title">
+          {new Date().toLocaleDateString("en-US", {
+            month: "long",
+            year: "numeric",
+          })}{" "}
+          · Ledger
+        </span>
+        <span className="wp-ledger-tag">MUsanze</span>
       </div>
       {ledgerRows.map((row) => (
         <div className="wp-row" key={row.room}>
@@ -293,6 +333,8 @@ const steps = [
 ];
 
 export default function WelcomePage() {
+  const [navOpen, setNavOpen] = useState(false);
+
   return (
     <div className="wp">
       <WPStyles />
@@ -316,11 +358,28 @@ export default function WelcomePage() {
           </span>
           Rent Manager
         </div>
-        <div className="wp-nav-links">
-          <Link to="/sign-in" className="wp-btn wp-btn-ghost">
+        <button
+          type="button"
+          className="wp-nav-toggle"
+          onClick={() => setNavOpen((v) => !v)}
+          aria-label={navOpen ? "Close menu" : "Open menu"}
+          aria-expanded={navOpen}
+        >
+          {navOpen ? <X size={18} /> : <Menu size={18} />}
+        </button>
+        <div className={`wp-nav-links ${navOpen ? "" : "is-closed"}`}>
+          <Link
+            to="/sign-in"
+            className="wp-btn wp-btn-ghost"
+            onClick={() => setNavOpen(false)}
+          >
             Log In
           </Link>
-          <Link to="/sign-up" className="wp-btn wp-btn-primary">
+          <Link
+            to="/sign-up"
+            className="wp-btn wp-btn-primary"
+            onClick={() => setNavOpen(false)}
+          >
             Sign Up
           </Link>
         </div>
